@@ -1,6 +1,6 @@
 {
   "name": "konro",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "A type-safe, functional-inspired ORM for local JSON/YAML file-based data sources.",
   "type": "module",
   "main": "./dist/index.cjs",
