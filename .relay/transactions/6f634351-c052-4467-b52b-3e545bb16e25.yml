@@ -1,0 +1,134 @@
+uuid: 6f634351-c052-4467-b52b-3e545bb16e25
+projectId: konro
+createdAt: '2025-07-09T08:50:49.182Z'
+linesAdded: 1
+linesRemoved: 0
+gitCommitMsg: 'fix(pkg): add types condition to exports map'
+promptSummary: >-
+  Fix TypeScript type resolution issue where declaration files are not found due
+  to a missing 'types' condition in package.json 'exports'.
+reasoning:
+  - >-
+    Hello! As an expert AI programmer, I'd be happy to help you with this
+    TypeScript type resolution issue. Here are the modifications to fix the
+    problem.
+  - '### Reasoning'
+  - >-
+    The error message `Could not find a declaration file for module 'konro'...
+    when respecting package.json "exports"` indicates that TypeScript's modern
+    module resolution (`"moduleResolution": "bundler"`) cannot find the type
+    declarations because they are not properly declared within the `exports` map
+    in `package.json`.
+  - >-
+    When the `exports` field is present, it becomes the authoritative source for
+    how the package's modules are resolved, and top-level fields like `"main"`,
+    `"module"`, and `"types"` are often ignored.
+  - >-
+    To fix this, I will add a `"types"` condition to the `exports` map. This
+    explicitly tells TypeScript and other tools where to find the package's type
+    definitions. According to best practices, the `"types"` condition should be
+    listed first.
+  - '### `package.json`'
+  - >-
+    I will update `package.json` to include the `types` condition in the
+    `exports` map.
+  - >-
+    This change should resolve the type-checking error for consumers of your
+    library.
+  - '---'
+operations:
+  - type: write
+    path: package.json
+    content: |-
+      <<<<<<< SEARCH
+        "exports": {
+          ".": {
+            "import": "./dist/index.mjs",
+            "require": "./dist/index.js"
+          }
+        },
+      =======
+        "exports": {
+          ".": {
+            "types": "./dist/index.d.ts",
+            "import": "./dist/index.mjs",
+            "require": "./dist/index.js"
+          }
+        },
+      >>>>>>> REPLACE
+    patchStrategy: multi-search-replace
+snapshot:
+  package.json: |
+    {
+      "name": "konro",
+      "version": "0.1.3",
+      "description": "A type-safe, functional micro-ORM for JSON/YAML files.",
+      "type": "module",
+      "main": "./dist/index.js",
+      "module": "./dist/index.mjs",
+      "types": "./dist/index.d.ts",
+      "exports": {
+        ".": {
+          "import": "./dist/index.mjs",
+          "require": "./dist/index.js"
+        }
+      },
+      "files": [
+        "dist"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/relaycoder/konro.git"
+      },
+      "keywords": [
+        "orm",
+        "json",
+        "yaml",
+        "csv",
+        "xlsx",
+        "database",
+        "typescript",
+        "local-first",
+        "immutable",
+        "functional"
+      ],
+      "author": "relaycoder",
+      "license": "MIT",
+      "devDependencies": {
+        "@types/bun": "latest",
+        "@types/js-yaml": "^4.0.9",
+        "@types/papaparse": "^5.3.14",
+        "@typescript-eslint/eslint-plugin": "^8.36.0",
+        "@typescript-eslint/parser": "^8.36.0",
+        "eslint": "^9.30.1",
+        "js-yaml": "^4.1.0",
+        "papaparse": "^5.4.1",
+        "tsup": "^8.5.0",
+        "typescript": "^5.5.4",
+        "xlsx": "^0.18.5"
+      },
+      "peerDependencies": {
+        "js-yaml": "^4.1.0",
+        "papaparse": "^5.4.1",
+        "typescript": "^5.0.0",
+        "xlsx": "^0.18.5"
+      },
+      "peerDependenciesMeta": {
+        "js-yaml": {
+          "optional": true
+        },
+        "papaparse": {
+          "optional": true
+        },
+        "xlsx": {
+          "optional": true
+        }
+      },
+      "scripts": {
+        "lint": "eslint .",
+        "build": "tsup",
+        "dev": "tsup --watch",
+        "prepublishOnly": "npm run build"
+      }
+    }
+approved: true

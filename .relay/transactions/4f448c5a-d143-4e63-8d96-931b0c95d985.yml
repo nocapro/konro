@@ -1,0 +1,62 @@
+uuid: 4f448c5a-d143-4e63-8d96-931b0c95d985
+projectId: konro
+createdAt: '2025-07-09T00:57:39.283Z'
+linesAdded: 12
+linesRemoved: 2
+gitCommitMsg: 'test(schema): fix id helper test and add test for uuid helper'
+promptSummary: >-
+  The user requested to fix a failing test for `konro.id()` and add a new test
+  case for the recently added `konro.uuid()` helper.
+reasoning:
+  - >-
+    Of course. I'll fix the failing test by updating the expectation to include
+    the `_pk_strategy` and add a new test case for the `konro.uuid()` helper you
+    just requested.
+  - 'Here are the changes for `test/unit/Schema/ColumnHelpers.test.ts`:'
+operations:
+  - type: write
+    path: test/unit/Schema/ColumnHelpers.test.ts
+    content: >-
+      --- test/unit/Schema/ColumnHelpers.test.ts
+
+      +++ test/unit/Schema/ColumnHelpers.test.ts
+
+      @@ -5,9 +5,20 @@
+           const idCol = konro.id();
+           expect(idCol).toEqual({
+             _type: 'column',
+             dataType: 'id',
+      -      options: { unique: true },
+
+      +      options: { unique: true, _pk_strategy: 'auto-increment' },
+             _tsType: 0,
+           });
+         });
+       
+      +  it('should create a valid UUID column definition object when calling
+      konro.uuid()', () => {
+
+      +    const uuidCol = konro.uuid();
+
+      +    expect(uuidCol).toEqual({
+
+      +      _type: 'column',
+
+      +      dataType: 'id',
+
+      +      options: { unique: true, _pk_strategy: 'uuid' },
+
+      +      _tsType: '',
+
+      +    });
+
+      +  });
+
+      +
+         it('should create a valid string column definition with no options', () => {
+           const stringCol = konro.string();
+           expect(stringCol).toEqual({
+    patchStrategy: new-unified
+snapshot:
+  test/unit/Schema/ColumnHelpers.test.ts: "import { describe, it, expect } from 'bun:test';\r\nimport { konro } from '../../../src/index';\r\n\r\ndescribe('Unit > Schema > ColumnHelpers', () => {\r\n  it('should create a valid ID column definition object when calling konro.id()', () => {\r\n    const idCol = konro.id();\r\n    expect(idCol).toEqual({\r\n      _type: 'column',\r\n      dataType: 'id',\r\n      options: { unique: true },\r\n      _tsType: 0,\r\n    });\r\n  });\r\n\r\n  it('should create a valid string column definition with no options', () => {\r\n    const stringCol = konro.string();\r\n    expect(stringCol).toEqual({\r\n      _type: 'column',\r\n      dataType: 'string',\r\n      options: undefined,\r\n      _tsType: '',\r\n    });\r\n  });\r\n\r\n  it('should create a valid string column definition with all specified options', () => {\r\n    const defaultFn = () => 'default';\r\n    const stringCol = konro.string({\r\n      unique: true,\r\n      default: defaultFn,\r\n      min: 5,\r\n      max: 100,\r\n      format: 'email',\r\n    });\r\n    expect(stringCol).toEqual({\r\n      _type: 'column',\r\n      dataType: 'string',\r\n      options: {\r\n        unique: true,\r\n        default: defaultFn,\r\n        min: 5,\r\n        max: 100,\r\n        format: 'email',\r\n      },\r\n      _tsType: '',\r\n    });\r\n  });\r\n\r\n  it('should create a valid number column definition with no options', () => {\r\n    const numberCol = konro.number();\r\n    expect(numberCol).toEqual({\r\n      _type: 'column',\r\n      dataType: 'number',\r\n      options: undefined,\r\n      _tsType: 0,\r\n    });\r\n  });\r\n\r\n  it('should create a valid number column definition with all specified options', () => {\r\n    const numberCol = konro.number({\r\n      unique: false,\r\n      default: 0,\r\n      min: 0,\r\n      max: 1000,\r\n      type: 'integer',\r\n    });\r\n    expect(numberCol).toEqual({\r\n      _type: 'column',\r\n      dataType: 'number',\r\n      options: {\r\n        unique: false,\r\n        default: 0,\r\n        min: 0,\r\n        max: 1000,\r\n        type: 'integer',\r\n      },\r\n      _tsType: 0,\r\n    });\r\n  });\r\n\r\n  it('should create a valid boolean column with no options', () => {\r\n    const boolCol = konro.boolean();\r\n    expect(boolCol).toEqual({\r\n      _type: 'column',\r\n      dataType: 'boolean',\r\n      options: undefined,\r\n      _tsType: false,\r\n    });\r\n  });\r\n\r\n  it('should create a valid boolean column definition with a default value', () => {\r\n    const boolCol = konro.boolean({ default: false });\r\n    expect(boolCol).toEqual({\r\n      _type: 'column',\r\n      dataType: 'boolean',\r\n      options: { default: false },\r\n      _tsType: false,\r\n    });\r\n  });\r\n\r\n  it('should create a valid date column definition with no options', () => {\r\n    const dateCol = konro.date();\r\n    expect(dateCol).toEqual({\r\n      _type: 'column',\r\n      dataType: 'date',\r\n      options: undefined,\r\n      _tsType: expect.any(Date),\r\n    });\r\n  });\r\n\r\n  it('should create a valid date column definition with a default function', () => {\r\n    const defaultDateFn = () => new Date();\r\n    const dateCol = konro.date({ default: defaultDateFn });\r\n    expect(dateCol).toEqual({\r\n      _type: 'column',\r\n      dataType: 'date',\r\n      options: { default: defaultDateFn },\r\n      _tsType: expect.any(Date),\r\n    });\r\n    expect(dateCol.options?.default).toBe(defaultDateFn);\r\n  });\r\n\r\n  it('should create a valid string column with a literal default', () => {\r\n    const stringCol = konro.string({ default: 'hello' });\r\n    expect(stringCol).toEqual({\r\n      _type: 'column',\r\n      dataType: 'string',\r\n      options: { default: 'hello' },\r\n      _tsType: '',\r\n    });\r\n  });\r\n\r\n  it('should create a valid number column with a function default', () => {\r\n    const defaultFn = () => 42;\r\n    const numberCol = konro.number({ default: defaultFn });\r\n    expect(numberCol).toEqual({\r\n      _type: 'column',\r\n      dataType: 'number',\r\n      options: {\r\n        default: defaultFn,\r\n      },\r\n      _tsType: 0,\r\n    });\r\n    expect(numberCol.options?.default).toBe(defaultFn);\r\n  });\r\n\r\n  it('should create a valid boolean column with a function default', () => {\r\n    const defaultFn = () => true;\r\n    const boolCol = konro.boolean({ default: defaultFn });\r\n    expect(boolCol).toEqual({\r\n      _type: 'column',\r\n      dataType: 'boolean',\r\n      options: {\r\n        default: defaultFn,\r\n      },\r\n      _tsType: false,\r\n    });\r\n    expect(boolCol.options?.default).toBe(defaultFn);\r\n  });\r\n\r\n  it('should create a valid object column definition', () => {\r\n    const objCol = konro.object<{ meta: string }>();\r\n    expect(objCol).toMatchObject({\r\n      _type: 'column',\r\n      dataType: 'object',\r\n      options: undefined,\r\n    });\r\n  });\r\n});"
+approved: true

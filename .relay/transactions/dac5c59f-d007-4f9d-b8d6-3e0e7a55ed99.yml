@@ -1,0 +1,100 @@
+uuid: dac5c59f-d007-4f9d-b8d6-3e0e7a55ed99
+projectId: konro
+createdAt: '2025-07-09T02:21:52.229Z'
+linesAdded: 14
+linesRemoved: 14
+gitCommitMsg: 'fix(types): export TableState and refactor DatabaseState'
+promptSummary: >-
+  User reported a TypeScript error: `TableState` is not an exported member of
+  `src/types.ts`. This was caused by my previous refactor of `adapter.ts`. I am
+  now fixing this by defining and exporting `TableState` in `src/types.ts` and
+  refactoring `DatabaseState` to use it, which also makes the types module
+  DRYer.
+reasoning:
+  - >-
+    You are absolutely right. My apologies, my previous refactoring of
+    `src/adapter.ts` introduced a dependency on a `TableState` type that wasn't
+    exported from `src/types.ts`, leading to the compilation error.
+  - >-
+    To fix this, and to further align with the goal of making the codebase DRY,
+    I will introduce the `TableState` type in `src/types.ts`.
+  - >-
+    1.  **Define `TableState`**: I'll create and export a new `TableState` type
+    to represent the structure of a single table's data (`records` and `meta`).
+  - >-
+    2.  **Refactor `DatabaseState`**: I'll then refactor the existing
+    `DatabaseState` type to use `TableState`. This not only fixes the import
+    error in `adapter.ts` but also makes the type definitions in `types.ts` more
+    modular and reusable.
+  - 'Here is the patch for `src/types.ts`:'
+operations:
+  - type: write
+    path: src/types.ts
+    content: >-
+      --- src/types.ts
+
+      +++ src/types.ts
+
+      @@ -5,24 +5,24 @@
+        */
+       export type KRecord = Record<string, unknown>;
+       
+       /**
+      + * Represents the state of a single table, including its records and
+      metadata.
+
+      + */
+
+      +export type TableState<T extends KRecord = KRecord> = {
+
+      +  records: T[];
+
+      +  meta: {
+
+      +    lastId: number;
+
+      +  };
+
+      +};
+
+      +
+
+      +/**
+        * The in-memory representation of the entire database. It is a plain, immutable object.
+        */
+       export type DatabaseState<S extends KonroSchema<any, any> | unknown = unknown> = S extends KonroSchema<any, any>
+         ? {
+      -      [TableName in keyof S['tables']]: {
+
+      -        records: BaseModels<S['tables']>[TableName][];
+
+      -        meta: {
+
+      -          lastId: number;
+
+      -        };
+
+      -      };
+
+      +      [TableName in keyof S['tables']]:
+      TableState<BaseModels<S['tables']>[TableName]>;
+           }
+         : {
+      -      [tableName: string]: {
+
+      -        records: KRecord[];
+
+      -        meta: {
+
+      -          lastId: number;
+
+      -        };
+
+      -      };
+
+      +      [tableName: string]: TableState;
+           };
+    patchStrategy: new-unified
+snapshot:
+  src/types.ts: "import type { BaseModels, KonroSchema } from './schema';\r\n\r\n/**\r\n * A generic representation of a single record within a table.\r\n * It uses `unknown` for values to enforce type-safe access.\r\n */\r\nexport type KRecord = Record<string, unknown>;\r\n\r\n/**\r\n * The in-memory representation of the entire database. It is a plain, immutable object.\r\n */\r\nexport type DatabaseState<S extends KonroSchema<any, any> | unknown = unknown> = S extends KonroSchema<any, any>\r\n  ? {\r\n      [TableName in keyof S['tables']]: {\r\n        records: BaseModels<S['tables']>[TableName][];\r\n        meta: {\r\n          lastId: number;\r\n        };\r\n      };\r\n    }\r\n  : {\r\n      [tableName: string]: {\r\n        records: KRecord[];\r\n        meta: {\r\n          lastId: number;\r\n        };\r\n      };\r\n    };"
+approved: true

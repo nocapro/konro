@@ -1,0 +1,848 @@
+uuid: b859f77f-1d86-4e4b-bb2a-71404c004c8f
+projectId: konro
+createdAt: '2025-07-07T13:17:32.360Z'
+gitCommitMsg: 'feat: implement integration and e2e tests'
+promptSummary: Create integration and e2e tests based on test.plan.md
+reasoning:
+  - >-
+    I will now implement the integration and end-to-end tests as outlined in the
+    test plan. This involves creating new test files for various scenarios,
+    including database context initialization, in-memory CRUD cycles, adapter
+    functionality for both JSON and YAML formats, type inference validation, and
+    full application lifecycle simulations.
+  - First, I'll create the integration tests.
+  - >-
+    This test file validates that the database context (`db`) can be
+    successfully created with a schema and an adapter, that it can generate a
+    correct empty database state, and that the schema is accessible on the `db`
+    object.
+  - >-
+    This test suite ensures that the core CRUD operations work correctly in
+    memory without involving the file system. It verifies the immutable nature
+    of state transitions by chaining operations.
+  - >-
+    These tests focus on the storage adapters, ensuring they can correctly write
+    to and read from the file system in their respective formats.
+  - >-
+    This file tests the `single-file-json` adapter's ability to serialize and
+    persist the entire database state into one JSON file.
+  - >-
+    This file tests the `multi-file-yaml` adapter, ensuring it correctly splits
+    the database state into multiple YAML files, one for each table.
+  - >-
+    This test suite covers the `db.read()` functionality, ensuring it can
+    correctly parse data from files, handle missing files by creating an empty
+    state, and throw appropriate errors for corrupted data.
+  - >-
+    This is a special type-definition test file. It's not meant to be executed
+    but to be checked by the TypeScript compiler (`tsc`). It uses
+    `@ts-expect-error` to assert that certain lines of code *must* produce a
+    type error, thus validating the correctness of the inferred types.
+  - Now, I'll create the end-to-end tests, which simulate a full user workflow.
+  - >-
+    This E2E test validates the entire lifecycle of data within a single JSON
+    file database: initializing the file, inserting data, writing to disk,
+    reading it back, performing relational queries, updating, deleting, and
+    verifying each step's persistence.
+  - >-
+    This test mirrors the single-file E2E test but for the multi-file YAML
+    adapter, ensuring data integrity is maintained across multiple files
+    throughout the CRUD lifecycle.
+  - >-
+    This test suite focuses on edge cases related to transactional integrity,
+    ensuring that a failed operation within a sequence doesn't corrupt the
+    persisted data and that no-op updates don't cause unnecessary file writes.
+  - >-
+    Finally, this test ensures that pagination (`limit` and `offset`) works
+    correctly on a large dataset that has been persisted to disk, verifying that
+    the correct "slice" of data is retrieved.
+operations:
+  - type: write
+    path: test/integration/DBContext/Initialization.test.ts
+    content: |-
+      import { describe, it, expect } from 'bun:test';
+      import { konro } from '../../../src/index';
+      import { testSchema } from '../../util';
+      import path from 'path';
+
+      describe('Integration > DBContext > Initialization', () => {
+        it('should successfully create a db context with a valid schema and adapter', () => {
+          const adapter = konro.createFileAdapter({
+            format: 'json',
+            single: { filepath: path.join(__dirname, 'test.db.json') },
+          });
+
+          const db = konro.createDatabase({
+            schema: testSchema,
+            adapter: adapter,
+          });
+
+          expect(db).toBeDefined();
+          expect(db.schema).toEqual(testSchema);
+          expect(db.adapter).toBe(adapter);
+          expect(typeof db.read).toBe('function');
+          expect(typeof db.write).toBe('function');
+          expect(typeof db.insert).toBe('function');
+          expect(typeof db.update).toBe('function');
+          expect(typeof db.delete).toBe('function');
+          expect(typeof db.query).toBe('function');
+        });
+
+        it('should correctly generate a pristine, empty DatabaseState object via db.createEmptyState()', () => {
+          const adapter = konro.createFileAdapter({
+            format: 'json',
+            single: { filepath: path.join(__dirname, 'test.db.json') },
+          });
+          const db = konro.createDatabase({
+            schema: testSchema,
+            adapter,
+          });
+
+          const emptyState = db.createEmptyState();
+
+          expect(emptyState).toEqual({
+            users: { records: [], meta: { lastId: 0 } },
+            posts: { records: [], meta: { lastId: 0 } },
+            profiles: { records: [], meta: { lastId: 0 } },
+            tags: { records: [], meta: { lastId: 0 } },
+            posts_tags: { records: [], meta: { lastId: 0 } },
+          });
+        });
+
+        it('should have the full schema definition available at db.schema for direct reference in queries', () => {
+          const adapter = konro.createFileAdapter({
+            format: 'json',
+            single: { filepath: path.join(__dirname, 'test.db.json') },
+          });
+          const db = konro.createDatabase({
+            schema: testSchema,
+            adapter,
+          });
+
+          // Example of using db.schema to reference a column definition
+          const userEmailColumn = db.schema.tables.users.email;
+          expect(userEmailColumn).toEqual(testSchema.tables.users.email);
+          expect(userEmailColumn.dataType).toBe('string');
+        });
+      });
+    patchStrategy: replace
+  - type: write
+    path: test/integration/InMemoryFlow/CrudCycle.test.ts
+    content: |-
+      import { describe, it, expect, beforeEach } from 'bun:test';
+      import { konro } from '../../../src/index';
+      import { testSchema } from '../../util';
+      import path from 'path';
+      import type { Database } from '../../../src/db';
+      import type { DatabaseState } from '../../../src/types';
+
+      describe('Integration > InMemoryFlow > CrudCycle', () => {
+        let db: Database<typeof testSchema>;
+        let state: DatabaseState;
+
+        beforeEach(() => {
+          // Adapter is needed for context creation, but we won't use its I/O
+          const adapter = konro.createFileAdapter({
+            format: 'json',
+            single: { filepath: path.join(__dirname, 'test.db.json') },
+          });
+          db = konro.createDatabase({
+            schema: testSchema,
+            adapter,
+          });
+          state = db.createEmptyState();
+        });
+
+        it('should allow inserting a record and then immediately querying for it', () => {
+          const [newState, insertedUser] = db.insert(state, 'users', {
+            name: 'InMemory Alice',
+            email: 'alice@inmemory.com',
+            age: 30,
+          });
+          expect(insertedUser.id).toBe(1);
+
+          const users = db.query(newState).from('users').all();
+          expect(users.length).toBe(1);
+          expect(users[0]).toEqual(insertedUser);
+        });
+
+        it('should correctly chain mutation operations by passing the newState', () => {
+          // Insert user
+          const [stateAfterUserInsert, user] = db.insert(state, 'users', {
+            name: 'Chain User',
+            email: 'chain@test.com',
+            age: 40,
+          });
+
+          // Insert post using the new state
+          const [stateAfterPostInsert, post] = db.insert(stateAfterUserInsert, 'posts', {
+            title: 'Chained Post',
+            content: '...',
+            authorId: user.id,
+          });
+
+          expect(stateAfterPostInsert.users.records.length).toBe(1);
+          expect(stateAfterPostInsert.posts.records.length).toBe(1);
+          expect(post.authorId).toBe(user.id);
+        });
+
+        it('should update a record and verify the change in the returned newState', () => {
+          const [stateAfterInsert, user] = db.insert(state, 'users', {
+            name: 'Update Me',
+            email: 'update@test.com',
+            age: 50,
+          });
+
+          const [stateAfterUpdate, updatedUsers] = db.update(stateAfterInsert, 'users')
+            .set({ name: 'Updated Name' })
+            .where({ id: user.id });
+
+          expect(updatedUsers.length).toBe(1);
+          expect(updatedUsers[0]?.name).toBe('Updated Name');
+
+          const queriedUser = db.query(stateAfterUpdate).from('users').where({ id: user.id }).first();
+          expect(queriedUser?.name).toBe('Updated Name');
+          expect(stateAfterInsert.users.records[0]?.name).toBe('Update Me'); // Original state is untouched
+        });
+
+        it('should delete a record and verify its absence in the returned newState', () => {
+          const [stateAfterInsert, user] = db.insert(state, 'users', {
+            name: 'Delete Me',
+            email: 'delete@test.com',
+            age: 60,
+          });
+
+          const [stateAfterDelete, deletedUsers] = db.delete(stateAfterInsert, 'users')
+            .where({ id: user.id });
+          
+          expect(deletedUsers.length).toBe(1);
+          expect(deletedUsers[0]?.name).toBe('Delete Me');
+
+          const users = db.query(stateAfterDelete).from('users').all();
+          expect(users.length).toBe(0);
+        });
+
+        it('should correctly execute a query with a .with() clause on an in-memory state', () => {
+          const [s1, user] = db.insert(state, 'users', {
+            name: 'Relation User',
+            email: 'relation@test.com',
+            age: 35,
+          });
+          const [s2, ] = db.insert(s1, 'posts', [
+              { title: 'Relational Post 1', content: '...', authorId: user.id },
+              { title: 'Relational Post 2', content: '...', authorId: user.id },
+          ]);
+
+          const userWithPosts = db.query(s2).from('users').where({id: user.id}).with({posts: true}).first();
+
+          expect(userWithPosts).toBeDefined();
+          expect(userWithPosts?.name).toBe('Relation User');
+          expect(userWithPosts?.posts).toBeInstanceOf(Array);
+          expect(userWithPosts?.posts.length).toBe(2);
+          expect(userWithPosts?.posts[0]?.title).toBe('Relational Post 1');
+        });
+      });
+    patchStrategy: replace
+  - type: write
+    path: test/integration/Adapters/SingleFileJson.test.ts
+    content: |-
+      import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+      import { konro } from '../../../src/index';
+      import { testSchema, TEST_DIR, cleanup, ensureTestDir } from '../../util';
+      import path from 'path';
+      import { promises as fs } from 'fs';
+
+      describe('Integration > Adapters > SingleFileJson', () => {
+        const dbFilePath = path.join(TEST_DIR, 'db.json');
+        const adapter = konro.createFileAdapter({
+          format: 'json',
+          single: { filepath: dbFilePath },
+        });
+        const db = konro.createDatabase({
+          schema: testSchema,
+          adapter,
+        });
+
+        beforeEach(ensureTestDir);
+        afterEach(cleanup);
+
+        it('should correctly write the DatabaseState to a single JSON file', async () => {
+          let state = db.createEmptyState();
+          [state] = db.insert(state, 'users', {
+            name: 'JSON User',
+            email: 'json@test.com',
+            age: 33,
+          });
+
+          await db.write(state);
+
+          const fileExists = await fs.access(dbFilePath).then(() => true).catch(() => false);
+          expect(fileExists).toBe(true);
+
+          const fileContent = await fs.readFile(dbFilePath, 'utf-8');
+          const parsedContent = JSON.parse(fileContent);
+
+          expect(parsedContent.users.records.length).toBe(1);
+          expect(parsedContent.users.records[0].name).toBe('JSON User');
+          expect(parsedContent.users.meta.lastId).toBe(1);
+          expect(parsedContent.posts.records.length).toBe(0);
+        });
+        
+        it('should correctly serialize complex data types like dates', async () => {
+          let state = db.createEmptyState();
+          const testDate = new Date('2023-10-27T10:00:00.000Z');
+
+          [state] = db.insert(state, 'posts', {
+            title: 'Dated Post',
+            content: '...',
+            authorId: 1,
+            // override default
+            publishedAt: testDate,
+          });
+          
+          await db.write(state);
+
+          const fileContent = await fs.readFile(dbFilePath, 'utf-8');
+          const parsedContent = JSON.parse(fileContent);
+          
+          expect(parsedContent.posts.records[0].publishedAt).toBe(testDate.toISOString());
+        });
+      });
+    patchStrategy: replace
+  - type: write
+    path: test/integration/Adapters/MultiFileYaml.test.ts
+    content: |-
+      import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+      import { konro } from '../../../src/index';
+      import { testSchema, TEST_DIR, cleanup, ensureTestDir } from '../../util';
+      import path from 'path';
+      import { promises as fs } from 'fs';
+      import yaml from 'js-yaml';
+
+      describe('Integration > Adapters > MultiFileYaml', () => {
+        const dbDirPath = path.join(TEST_DIR, 'yaml_db');
+        const adapter = konro.createFileAdapter({
+          format: 'yaml',
+          multi: { dir: dbDirPath },
+        });
+        const db = konro.createDatabase({
+          schema: testSchema,
+          adapter,
+        });
+
+        beforeEach(ensureTestDir);
+        afterEach(cleanup);
+
+        it('should correctly write each table to a separate YAML file', async () => {
+          let state = db.createEmptyState();
+          [state] = db.insert(state, 'users', {
+            name: 'YAML User',
+            email: 'yaml@test.com',
+            age: 44,
+          });
+          [state] = db.insert(state, 'posts', {
+            title: 'YAML Post',
+            content: 'Content here',
+            authorId: 1,
+          });
+
+          await db.write(state);
+
+          const usersFilePath = path.join(dbDirPath, 'users.yaml');
+          const postsFilePath = path.join(dbDirPath, 'posts.yaml');
+
+          const usersFileExists = await fs.access(usersFilePath).then(() => true).catch(() => false);
+          const postsFileExists = await fs.access(postsFilePath).then(() => true).catch(() => false);
+          expect(usersFileExists).toBe(true);
+          expect(postsFileExists).toBe(true);
+
+          const usersFileContent = await fs.readFile(usersFilePath, 'utf-8');
+          const postsFileContent = await fs.readFile(postsFilePath, 'utf-8');
+
+          const parsedUsers = yaml.load(usersFileContent) as { records: unknown[], meta: unknown };
+          const parsedPosts = yaml.load(postsFileContent) as { records: unknown[], meta: unknown };
+
+          expect(parsedUsers.records.length).toBe(1);
+          expect((parsedUsers.records[0] as { name: string }).name).toBe('YAML User');
+          expect((parsedUsers.meta as { lastId: number }).lastId).toBe(1);
+
+          expect(parsedPosts.records.length).toBe(1);
+          expect((parsedPosts.records[0] as { title: string }).title).toBe('YAML Post');
+          expect((parsedPosts.meta as { lastId: number }).lastId).toBe(1);
+        });
+
+        it('should correctly serialize and deserialize dates', async () => {
+          let state = db.createEmptyState();
+          const testDate = new Date('2023-10-27T10:00:00.000Z');
+
+          [state] = db.insert(state, 'posts', {
+            title: 'Dated Post',
+            content: '...',
+            authorId: 1,
+            publishedAt: testDate,
+          });
+          
+          await db.write(state);
+          
+          const readState = await db.read();
+          
+          expect(readState.posts.records[0]?.publishedAt).toBeInstanceOf(Date);
+          expect((readState.posts.records[0]?.publishedAt as Date).getTime()).toBe(testDate.getTime());
+        });
+      });
+    patchStrategy: replace
+  - type: write
+    path: test/integration/Adapters/Read.test.ts
+    content: |-
+      import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+      import { konro } from '../../../src/index';
+      import { testSchema, TEST_DIR, cleanup, ensureTestDir } from '../../util';
+      import path from 'path';
+      import { promises as fs } from 'fs';
+      import yaml from 'js-yaml';
+      import { KonroStorageError } from '../../../src/utils/error.util';
+
+      describe('Integration > Adapters > Read', () => {
+
+        beforeEach(ensureTestDir);
+        afterEach(cleanup);
+
+        describe('SingleFileJson', () => {
+          const dbFilePath = path.join(TEST_DIR, 'read_test.json');
+          const adapter = konro.createFileAdapter({
+            format: 'json',
+            single: { filepath: dbFilePath },
+          });
+          const db = konro.createDatabase({ schema: testSchema, adapter });
+
+          it('should correctly read and parse a single JSON file', async () => {
+            const state = db.createEmptyState();
+            state.users.records.push({ id: 1, name: 'Reader', email: 'reader@test.com', age: 30, isActive: true });
+            state.users.meta.lastId = 1;
+            await fs.writeFile(dbFilePath, JSON.stringify(state, null, 2));
+
+            const readState = await db.read();
+            expect(readState.users.records.length).toBe(1);
+            expect(readState.users.records[0]?.name).toBe('Reader');
+            expect(readState.users.meta.lastId).toBe(1);
+          });
+
+          it('should return an empty state if the file does not exist', async () => {
+            const readState = await db.read();
+            expect(readState).toEqual(db.createEmptyState());
+          });
+
+          it('should throw KonroStorageError for a corrupt JSON file', async () => {
+            await fs.writeFile(dbFilePath, '{ "users": { "records": ['); // Invalid JSON
+            await expect(db.read()).rejects.toThrow(KonroStorageError);
+          });
+        });
+
+        describe('MultiFileYaml', () => {
+          const dbDirPath = path.join(TEST_DIR, 'read_yaml_test');
+          const adapter = konro.createFileAdapter({
+            format: 'yaml',
+            multi: { dir: dbDirPath },
+          });
+          const db = konro.createDatabase({ schema: testSchema, adapter });
+
+          it('should correctly read and parse multiple YAML files', async () => {
+            const state = db.createEmptyState();
+            state.users.records.push({ id: 1, name: 'YamlReader', email: 'yaml@test.com', age: 31, isActive: true });
+            state.users.meta.lastId = 1;
+            state.posts.records.push({ id: 1, title: 'Yaml Post', content: '...', authorId: 1, publishedAt: new Date() });
+            state.posts.meta.lastId = 1;
+
+            await fs.mkdir(dbDirPath, { recursive: true });
+            await fs.writeFile(path.join(dbDirPath, 'users.yaml'), yaml.dump({ records: state.users.records, meta: state.users.meta }));
+            await fs.writeFile(path.join(dbDirPath, 'posts.yaml'), yaml.dump({ records: state.posts.records, meta: state.posts.meta }));
+            
+            const readState = await db.read();
+            expect(readState.users.records.length).toBe(1);
+            expect(readState.users.records[0]?.name).toBe('YamlReader');
+            expect(readState.posts.records.length).toBe(1);
+            expect(readState.posts.records[0]?.title).toBe('Yaml Post');
+            expect(readState.tags.records.length).toBe(0); // Ensure non-existent files are handled
+          });
+
+          it('should return an empty state if the directory does not exist', async () => {
+            const readState = await db.read();
+            expect(readState).toEqual(db.createEmptyState());
+          });
+        });
+      });
+    patchStrategy: replace
+  - type: write
+    path: test/integration/Types/InferredTypes.test-d.ts
+    content: |-
+      import { describe, it } from 'bun:test';
+      import { konro } from '../../../src/index';
+      import { schemaDef } from '../../util';
+
+      /**
+       * NOTE: This is a type definition test file.
+       * It is not meant to be run, but to be checked by `tsc`.
+       * The presence of `// @ts-expect-error` comments indicates
+       * that a TypeScript compilation error is expected on the next line.
+       * If the error does not occur, `tsc` will fail, which is the desired behavior for this test.
+       */
+      describe('Integration > Types > InferredTypes', () => {
+          it('should pass type checks', () => {
+              const testSchema = konro.createSchema(schemaDef);
+              type User = typeof testSchema.types.users;
+              type Post = typeof testSchema.types.posts;
+
+              // Test 1: Inferred User type should have correct primitive and relational fields.
+              const user: User = {
+                  id: 1,
+                  name: 'Alice',
+                  email: 'alice@example.com',
+                  age: 30,
+                  isActive: true,
+                  posts: [{
+                      id: 1,
+                      title: 'Post 1',
+                      content: '...',
+                      authorId: 1,
+                      publishedAt: new Date(),
+                  }],
+                  profile: null,
+              };
+
+              // This should be valid
+              const userName: string = user.name;
+              const userPosts: Post[] = user.posts;
+              
+              const db = konro.createDatabase({ schema: testSchema, adapter: {} as any });
+              const state = db.createEmptyState();
+
+              // Test 2: Should cause a TS error if a non-existent field is used in a where clause.
+              // @ts-expect-error - 'nonExistentField' does not exist on type 'User'.
+              db.query(state).from('users').where({ nonExistentField: 'value' });
+
+              // This should be valid
+              db.query(state).from('users').where({ name: 'Alice' });
+
+              // Test 3: Should cause a TS error if a wrong type is passed to db.insert().
+              // @ts-expect-error - 'age' should be a number, not a string.
+              db.insert(state, 'users', { name: 'Bob', email: 'bob@test.com', age: 'twenty-five' });
+
+              // This should be valid
+              db.insert(state, 'users', { name: 'Bob', email: 'bob@test.com', age: 25 });
+              
+              // Test 4: Nested .with clause should be typed correctly
+              const result = db.query(state).from('users').with({
+                  posts: {
+                      where: (post) => post.title.startsWith('A') // post is typed as Post
+                  }
+              }).first();
+
+              // @ts-expect-error - 'nonExistentRelation' is not a valid relation on 'users'
+              db.query(state).from('users').with({ nonExistentRelation: true });
+          });
+      });
+    patchStrategy: replace
+  - type: write
+    path: test/e2e/SingleFileJson/FullLifecycle.test.ts
+    content: |-
+      import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+      import { konro } from '../../../src/index';
+      import { testSchema, TEST_DIR, cleanup, ensureTestDir } from '../../util';
+      import path from 'path';
+      import { promises as fs } from 'fs';
+
+      describe('E2E > SingleFileJson > FullLifecycle', () => {
+        const dbFilePath = path.join(TEST_DIR, 'e2e_db.json');
+        const adapter = konro.createFileAdapter({
+          format: 'json',
+          single: { filepath: dbFilePath },
+        });
+        const db = konro.createDatabase({
+          schema: testSchema,
+          adapter,
+        });
+
+        beforeEach(ensureTestDir);
+        afterEach(cleanup);
+
+        it('should handle a full data lifecycle: write, read, insert, query, update, delete', async () => {
+          // 1. Initialize an empty database file
+          let state = db.createEmptyState();
+          await db.write(state);
+          let fileContent = await fs.readFile(dbFilePath, 'utf-8');
+          expect(JSON.parse(fileContent).users.records.length).toBe(0);
+
+          // 2. Read state, insert a user and a post, and write back
+          state = await db.read();
+          const [s1, user] = db.insert(state, 'users', {
+            name: 'E2E User',
+            email: 'e2e@test.com',
+            age: 42,
+          });
+          const [s2, post] = db.insert(s1, 'posts', {
+            title: 'E2E Post',
+            content: 'Live from the disk',
+            authorId: user.id,
+          });
+          await db.write(s2);
+
+          // 3. Read back and verify data integrity
+          let readState = await db.read();
+          expect(readState.users.records.length).toBe(1);
+          expect(readState.posts.records.length).toBe(1);
+          expect(readState.users.records[0]?.name).toBe('E2E User');
+
+          // 4. Perform a complex query with relations on the re-read state
+          const userWithPosts = db.query(readState)
+            .from('users')
+            .where({ id: user.id })
+            .with({ posts: true })
+            .first();
+          
+          expect(userWithPosts).toBeDefined();
+          expect(userWithPosts?.posts.length).toBe(1);
+          expect(userWithPosts?.posts[0]?.title).toBe('E2E Post');
+
+          // 5. Update a record, write the change, and read back to confirm
+          const [s3, updatedPosts] = db.update(readState, 'posts')
+              .set({ title: 'Updated E2E Post' })
+              .where({ id: post.id });
+          expect(updatedPosts.length).toBe(1);
+          await db.write(s3);
+          
+          let stateAfterUpdate = await db.read();
+          const updatedPostFromDisk = db.query(stateAfterUpdate).from('posts').where({ id: post.id }).first();
+          expect(updatedPostFromDisk?.title).toBe('Updated E2E Post');
+
+          // 6. Delete a record, write, and confirm it's gone
+          const [s4, deletedUsers] = db.delete(stateAfterUpdate, 'users')
+              .where({ id: user.id });
+          expect(deletedUsers.length).toBe(1);
+          await db.write(s4);
+
+          let finalState = await db.read();
+          expect(finalState.users.records.length).toBe(0);
+          // The post should also effectively be orphaned, let's check it's still there
+          expect(finalState.posts.records.length).toBe(1);
+        });
+      });
+    patchStrategy: replace
+  - type: write
+    path: test/e2e/MultiFileYaml/FullLifecycle.test.ts
+    content: |-
+      import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+      import { konro } from '../../../src/index';
+      import { testSchema, TEST_DIR, cleanup, ensureTestDir } from '../../util';
+      import path from 'path';
+      import { promises as fs } from 'fs';
+      import yaml from 'js-yaml';
+
+      describe('E2E > MultiFileYaml > FullLifecycle', () => {
+        const dbDirPath = path.join(TEST_DIR, 'e2e_yaml_db');
+        const adapter = konro.createFileAdapter({
+          format: 'yaml',
+          multi: { dir: dbDirPath },
+        });
+        const db = konro.createDatabase({
+          schema: testSchema,
+          adapter,
+        });
+
+        beforeEach(ensureTestDir);
+        afterEach(cleanup);
+
+        it('should handle a full data lifecycle across multiple YAML files', async () => {
+          // 1. Initialize empty database files
+          let state = db.createEmptyState();
+          await db.write(state);
+          
+          // Check that empty files are created
+          const usersFilePath = path.join(dbDirPath, 'users.yaml');
+          const postsFilePath = path.join(dbDirPath, 'posts.yaml');
+          let usersFileContent = await fs.readFile(usersFilePath, 'utf-8');
+          expect(yaml.load(usersFileContent)).toEqual({ records: [], meta: { lastId: 0 } });
+
+          // 2. Insert data and write to disk
+          const [s1, user] = db.insert(state, 'users', { name: 'E2E Yaml', email: 'yaml.e2e@test.com', age: 50 });
+          const [s2] = db.insert(s1, 'posts', { title: 'YAML Post', content: '...', authorId: user.id });
+          await db.write(s2);
+
+          // 3. Read back and verify integrity from separate files
+          const readState = await db.read();
+          expect(readState.users.records.length).toBe(1);
+          expect(readState.posts.records.length).toBe(1);
+          expect(readState.users.records[0]?.id).toBe(user.id);
+
+          // 4. Query with relations
+          const userWithPosts = db.query(readState).from('users').where({ id: user.id }).with({ posts: true }).first();
+          expect(userWithPosts).toBeDefined();
+          expect(userWithPosts?.posts.length).toBe(1);
+          expect(userWithPosts?.posts[0]?.title).toBe('YAML Post');
+
+          // 5. Update and write
+          const [s3] = db.update(readState, 'users').set({ name: 'Updated Yaml User' }).where({ id: user.id });
+          await db.write(s3);
+          const stateAfterUpdate = await db.read();
+          expect(stateAfterUpdate.users.records[0]?.name).toBe('Updated Yaml User');
+
+          // 6. Delete and write
+          const [s4] = db.delete(stateAfterUpdate, 'posts').where({ authorId: user.id });
+          await db.write(s4);
+          const finalState = await db.read();
+          expect(finalState.posts.records.length).toBe(0);
+          expect(finalState.users.records.length).toBe(1);
+        });
+      });
+    patchStrategy: replace
+  - type: write
+    path: test/e2e/ErrorAndEdgeCases/Transaction.test.ts
+    content: |-
+      import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+      import { konro } from '../../../src/index';
+      import { testSchema, TEST_DIR, cleanup, ensureTestDir } from '../../util';
+      import path from 'path';
+      import { promises as fs } from 'fs';
+      import { KonroValidationError } from '../../../src/utils/error.util';
+
+      describe('E2E > ErrorAndEdgeCases > Transaction', () => {
+          const dbFilePath = path.join(TEST_DIR, 'transaction_test.json');
+          const adapter = konro.createFileAdapter({
+              format: 'json',
+              single: { filepath: dbFilePath },
+          });
+          const db = konro.createDatabase({
+              schema: testSchema,
+              adapter,
+          });
+
+          beforeEach(async () => {
+              await ensureTestDir();
+              // Start with a clean slate for each test
+              await db.write(db.createEmptyState());
+          });
+          afterEach(cleanup);
+
+          it('should not write to disk if an operation fails mid-transaction', async () => {
+              // 1. Get initial state with one user
+              let state = await db.read();
+              [state] = db.insert(state, 'users', { name: 'Good User', email: 'good@test.com', age: 30 });
+              await db.write(state);
+
+              const contentBefore = await fs.readFile(dbFilePath, 'utf-8');
+
+              // 2. Start a "transaction": read, then perform multiple operations
+              let transactionState = await db.read();
+
+              // This one is fine
+              [transactionState] = db.insert(transactionState, 'users', { name: 'Another User', email: 'another@test.com', age: 31 });
+
+              // This one will fail due to unique constraint
+              const failingOperation = () => {
+                  db.insert(transactionState, 'users', { name: 'Bad User', email: 'good@test.com', age: 32 });
+              };
+              expect(failingOperation).toThrow(KonroValidationError);
+
+              // Even if the error is caught, the developer should not write the tainted `transactionState`.
+              // The file on disk should remain untouched from before the transaction started.
+              const contentAfter = await fs.readFile(dbFilePath, 'utf-8');
+              expect(contentAfter).toEqual(contentBefore);
+          });
+          
+          it('should not change the database file if an update matches no records', async () => {
+              let state = await db.read();
+              [state] = db.insert(state, 'users', { name: 'Initial User', email: 'initial@test.com', age: 50 });
+              await db.write(state);
+              
+              const contentBefore = await fs.readFile(dbFilePath, 'utf-8');
+              
+              // Read the state to perform an update
+              let currentState = await db.read();
+              const [newState] = db.update(currentState, 'users')
+                  .set({ name: 'This Should Not Be Set' })
+                  .where({ id: 999 }); // This matches no records
+              
+              await db.write(newState);
+
+              const contentAfter = await fs.readFile(dbFilePath, 'utf-8');
+
+              // The content should be identical because the state object itself shouldn't have changed meaningfully.
+              expect(contentAfter).toEqual(contentBefore);
+          });
+      });
+    patchStrategy: replace
+  - type: write
+    path: test/e2e/ErrorAndEdgeCases/Pagination.test.ts
+    content: |-
+      import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+      import { konro } from '../../../src/index';
+      import { testSchema, TEST_DIR, cleanup, ensureTestDir } from '../../util';
+      import path from 'path';
+      import type { DatabaseState } from '../../../src/types';
+
+      describe('E2E > ErrorAndEdgeCases > Pagination', () => {
+          const dbFilePath = path.join(TEST_DIR, 'pagination_test.json');
+          const adapter = konro.createFileAdapter({
+              format: 'json',
+              single: { filepath: dbFilePath },
+          });
+          const db = konro.createDatabase({
+              schema: testSchema,
+              adapter,
+          });
+
+          beforeEach(async () => {
+              await ensureTestDir();
+              let state: DatabaseState = db.createEmptyState();
+              const usersToInsert = [];
+              for (let i = 1; i <= 100; i++) {
+                  usersToInsert.push({
+                      name: `User ${i}`,
+                      email: `user${i}@test.com`,
+                      age: 20 + (i % 30),
+                  });
+              }
+              [state] = db.insert(state, 'users', usersToInsert);
+              await db.write(state);
+          });
+          afterEach(cleanup);
+
+          it('should correctly paginate through a large set of records from a file', async () => {
+              const state = await db.read();
+              expect(state.users.records.length).toBe(100);
+
+              // Get page 1 (items 1-10)
+              const page1 = db.query(state).from('users').limit(10).offset(0).all();
+              expect(page1.length).toBe(10);
+              expect(page1[0]?.name).toBe('User 1');
+              expect(page1[9]?.name).toBe('User 10');
+
+              // Get page 2 (items 11-20)
+              const page2 = db.query(state).from('users').limit(10).offset(10).all();
+              expect(page2.length).toBe(10);
+              expect(page2[0]?.name).toBe('User 11');
+              expect(page2[9]?.name).toBe('User 20');
+              
+              // Get the last page, which might be partial
+              const lastPage = db.query(state).from('users').limit(10).offset(95).all();
+              expect(lastPage.length).toBe(5);
+              expect(lastPage[0]?.name).toBe('User 96');
+              expect(lastPage[4]?.name).toBe('User 100');
+
+              // Get an empty page beyond the end
+              const emptyPage = db.query(state).from('users').limit(10).offset(100).all();
+              expect(emptyPage.length).toBe(0);
+          });
+      });
+    patchStrategy: replace
+snapshot:
+  test/integration/DBContext/Initialization.test.ts: null
+  test/integration/InMemoryFlow/CrudCycle.test.ts: null
+  test/integration/Adapters/SingleFileJson.test.ts: null
+  test/integration/Adapters/MultiFileYaml.test.ts: null
+  test/integration/Adapters/Read.test.ts: null
+  test/integration/Types/InferredTypes.test-d.ts: null
+  test/e2e/SingleFileJson/FullLifecycle.test.ts: null
+  test/e2e/MultiFileYaml/FullLifecycle.test.ts: null
+  test/e2e/ErrorAndEdgeCases/Transaction.test.ts: null
+  test/e2e/ErrorAndEdgeCases/Pagination.test.ts: null
+approved: true

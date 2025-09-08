@@ -1,0 +1,556 @@
+uuid: b0d268d8-bbde-4796-9040-d6676dd3f124
+projectId: konro
+createdAt: '2025-07-09T04:48:20.712Z'
+linesAdded: 6
+linesRemoved: 13
+gitCommitMsg: 'fix(adapter): correct per-record validation and error handling'
+promptSummary: >-
+  User provided test failures for the new 'per-record' strategy and asked for a
+  fix.
+reasoning:
+  - >-
+    Of course. It looks like a couple of tests failed due to an incorrect order
+    of validation checks and a missed error-wrapping opportunity. I'll correct
+    these issues.
+  - >-
+    First, I'll adjust `src/adapter.ts`. The validation for `perRecord` formats
+    should happen before the more general `tabular` format check to provide a
+    more specific error message. I'll also refactor the `readPerRecord` function
+    to use the existing `parseFile` helper, which correctly wraps parsing errors
+    in a `KonroStorageError`.
+  - >-
+    Next, I'll fix the test file `test/integration/Adapters/PerRecord.test.ts`
+    by removing the unnecessary `@ts-expect-error` directive. The TypeScript
+    compiler was correct that it was unused, as the check is a runtime
+    validation, not a type error. With the logic in `src/adapter.ts` corrected,
+    this test should now pass.
+  - These changes should resolve both test failures.
+operations:
+  - type: write
+    path: src/adapter.ts
+    content: >-
+      --- src/adapter.ts
+
+      +++ src/adapter.ts
+
+      @@ -40,17 +40,17 @@
+         const fs = options.fs ?? defaultFsProvider;
+         const mode = options.mode ?? 'in-memory';
+       
+      +  if (options.perRecord && options.format !== 'json' && options.format
+      !== 'yaml') {
+
+      +    throw KonroError(`The 'per-record' strategy only supports 'json' or
+      'yaml' formats.`);
+
+      +  }
+
+      +
+         const isTabular = options.format === 'csv' || options.format === 'xlsx';
+         if (isTabular && (mode !== 'on-demand' || !options.multi)) {
+           throw KonroError(`The '${options.format}' format only supports 'on-demand' mode with a 'multi-file' strategy.`);
+         }
+       
+      -  if (options.perRecord && options.format !== 'json' && options.format
+      !== 'yaml') {
+
+      -    throw KonroError(`The 'per-record' strategy only supports 'json' or
+      'yaml' formats.`);
+
+      -  }
+
+      -
+         if (mode === 'on-demand' && options.single) {
+           throw KonroError("The 'on-demand' mode requires the 'multi-file' or 'per-record' storage strategy.");
+         }
+      @@ -102,17 +102,11 @@
+               const recordFiles = files.filter((f) => !f.startsWith('_meta'));
+       
+               const records = await Promise.all(
+      -          recordFiles.map(async (file) => {
+
+      -            const recordPath = path.join(tableDir, file);
+
+      -            const recordContent = await fs.readFile(recordPath);
+
+      -            if (!recordContent) return null;
+
+      -            // The serializer for json/yaml just parses the content,
+      schema is ignored.
+
+      -            return serializer.parse<KRecord>(recordContent);
+
+      -          })
+
+      +          recordFiles.map((file) =>
+      parseFile<KRecord>(path.join(tableDir, file)))
+               );
+       
+      -        (state as any)[tableName].records = records.filter((r) => r !==
+      null);
+
+      +        (state as any)[tableName].records = records.filter((r): r is
+      KRecord => r != null);
+       
+               // If meta file didn't exist or was empty, derive lastId for auto-increment PKs.
+               if ((state as any)[tableName].meta.lastId === 0) {
+    patchStrategy: new-unified
+  - type: write
+    path: test/integration/Adapters/PerRecord.test.ts
+    content: |-
+      --- test/integration/Adapters/PerRecord.test.ts
+      +++ test/integration/Adapters/PerRecord.test.ts
+      @@ -25,7 +25,6 @@
+           it('should throw an error for unsupported formats like "csv"', () => {
+             expect(() => {
+               konro.createFileAdapter({
+      -          // @ts-expect-error - testing invalid format
+                 format: 'csv',
+                 perRecord: { dir: dbDirPath },
+               });
+    patchStrategy: new-unified
+snapshot:
+  test/integration/Adapters/PerRecord.test.ts: >-
+    import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+
+    import { konro } from '../../../src/index';
+
+    import { testSchema, TEST_DIR, cleanup, ensureTestDir, uuidTestSchema } from
+    '../../util';
+
+    import path from 'path';
+
+    import { promises as fs } from 'fs';
+
+    import yaml from 'js-yaml';
+
+    import { KonroError, KonroStorageError } from
+    '../../../src/utils/error.util';
+
+    import type { InMemoryDbContext, OnDemandDbContext } from '../../../src/db';
+
+
+    describe('Integration > Adapters > PerRecord', () => {
+      const dbDirPath = path.join(TEST_DIR, 'per_record_db');
+
+      beforeEach(ensureTestDir);
+      afterEach(cleanup);
+
+      describe('Initialization', () => {
+        it('should successfully create a per-record adapter', () => {
+          const adapter = konro.createFileAdapter({
+            format: 'json',
+            perRecord: { dir: dbDirPath },
+          });
+          expect(adapter).toBeDefined();
+          expect(adapter.options.perRecord).toEqual({ dir: dbDirPath });
+        });
+
+        it('should throw an error for unsupported formats like "csv"', () => {
+          expect(() => {
+            konro.createFileAdapter({
+              // @ts-expect-error - testing invalid format
+              format: 'csv',
+              perRecord: { dir: dbDirPath },
+            });
+          }).toThrow(KonroError("The 'per-record' strategy only supports 'json' or 'yaml' formats."));
+        });
+      });
+
+      describe('In-Memory Mode (JSON)', () => {
+        let db: InMemoryDbContext<typeof testSchema>;
+        const adapter = konro.createFileAdapter({
+          format: 'json',
+          perRecord: { dir: dbDirPath },
+        });
+
+        beforeEach(() => {
+          db = konro.createDatabase({ schema: testSchema, adapter });
+        });
+
+        it('should write each record to a separate file and a meta file', async () => {
+          let state = db.createEmptyState();
+          [state] = db.insert(state, 'users', { name: 'Record User', email: 'rec@test.com', age: 33 });
+          [state] = db.insert(state, 'posts', { title: 'Record Post', content: '...', authorId: 1 });
+
+          await db.write(state);
+
+          const usersDir = path.join(dbDirPath, 'users');
+          const postsDir = path.join(dbDirPath, 'posts');
+          
+          const userRecordPath = path.join(usersDir, '1.json');
+          const userMetaPath = path.join(usersDir, '_meta.json');
+          const postRecordPath = path.join(postsDir, '1.json');
+          const postMetaPath = path.join(postsDir, '_meta.json');
+
+          const userRecordContent = JSON.parse(await fs.readFile(userRecordPath, 'utf-8'));
+          const userMetaContent = JSON.parse(await fs.readFile(userMetaPath, 'utf-8'));
+          const postRecordContent = JSON.parse(await fs.readFile(postRecordPath, 'utf-8'));
+          const postMetaContent = JSON.parse(await fs.readFile(postMetaPath, 'utf-8'));
+
+          expect(userRecordContent.name).toBe('Record User');
+          expect(userMetaContent.lastId).toBe(1);
+          expect(postRecordContent.title).toBe('Record Post');
+          expect(postMetaContent.lastId).toBe(1);
+        });
+
+        it('should delete record files that are no longer in the state', async () => {
+          let state = db.createEmptyState();
+          [state] = db.insert(state, 'users', { name: 'To Be Deleted', email: 'del@test.com', age: 40 });
+          await db.write(state);
+          
+          const userRecordPath = path.join(dbDirPath, 'users', '1.json');
+          expect(await fs.access(userRecordPath).then(() => true).catch(() => false)).toBe(true);
+
+          [state] = db.delete(state, 'users').where({ id: 1 });
+          await db.write(state);
+
+          expect(await fs.access(userRecordPath).then(() => true).catch(() => false)).toBe(false);
+        });
+
+        it('should read records from individual files to build the state', async () => {
+          // Manually create files
+          const usersDir = path.join(dbDirPath, 'users');
+          await fs.mkdir(usersDir, { recursive: true });
+          await fs.writeFile(path.join(usersDir, '1.json'), JSON.stringify({ id: 1, name: 'Manual User', email: 'man@test.com', age: 50, isActive: true }));
+          await fs.writeFile(path.join(usersDir, '_meta.json'), JSON.stringify({ lastId: 1 }));
+          
+          const state = await db.read();
+          
+          expect(state.users.records.length).toBe(1);
+          expect(state.users.records[0]?.name).toBe('Manual User');
+          expect(state.users.meta.lastId).toBe(1);
+          expect(state.posts.records.length).toBe(0);
+        });
+        
+        it('should derive lastId from record files if meta file is missing', async () => {
+            const usersDir = path.join(dbDirPath, 'users');
+            await fs.mkdir(usersDir, { recursive: true });
+            await fs.writeFile(path.join(usersDir, '2.json'), JSON.stringify({ id: 2, name: 'User 2', email: 'u2@test.com', age: 50, isActive: true }));
+            await fs.writeFile(path.join(usersDir, '5.json'), JSON.stringify({ id: 5, name: 'User 5', email: 'u5@test.com', age: 50, isActive: true }));
+
+            const state = await db.read();
+            expect(state.users.meta.lastId).toBe(5);
+        });
+
+        it('should throw KonroStorageError for a corrupt record file', async () => {
+          const usersDir = path.join(dbDirPath, 'users');
+          await fs.mkdir(usersDir, { recursive: true });
+          await fs.writeFile(path.join(usersDir, '1.json'), '{ "id": 1, "name": "Corrupt"'); // Invalid JSON
+          
+          await expect(db.read()).rejects.toThrow(KonroStorageError);
+        });
+      });
+
+      describe('On-Demand Mode (YAML)', () => {
+        let db: OnDemandDbContext<typeof testSchema>;
+        
+        beforeEach(() => {
+            const adapter = konro.createFileAdapter({
+                format: 'yaml',
+                mode: 'on-demand',
+                perRecord: { dir: dbDirPath },
+            });
+            db = konro.createDatabase({ schema: testSchema, adapter });
+        });
+
+        it('should insert a record and create its file and update meta', async () => {
+          const user = await db.insert('users', { name: 'OnDemand Record', email: 'odr@test.com', age: 25 });
+          
+          const userRecordPath = path.join(dbDirPath, 'users', `${user.id}.yaml`);
+          const userMetaPath = path.join(dbDirPath, 'users', '_meta.json');
+
+          const recordContent = yaml.load(await fs.readFile(userRecordPath, 'utf-8')) as any;
+          const metaContent = JSON.parse(await fs.readFile(userMetaPath, 'utf-8'));
+
+          expect(recordContent.name).toBe('OnDemand Record');
+          expect(metaContent.lastId).toBe(1);
+        });
+
+        it('should update a record file', async () => {
+          const user = await db.insert('users', { name: 'Update Me', email: 'upd@test.com', age: 35 });
+          await db.update('users').set({ name: 'Updated Name' }).where({ id: user.id });
+
+          const userRecordPath = path.join(dbDirPath, 'users', `${user.id}.yaml`);
+          const recordContent = yaml.load(await fs.readFile(userRecordPath, 'utf-8')) as any;
+          
+          expect(recordContent.name).toBe('Updated Name');
+        });
+
+        it('should delete a record file', async () => {
+          const user = await db.insert('users', { name: 'Delete Me', email: 'del@test.com', age: 45 });
+          const userRecordPath = path.join(dbDirPath, 'users', `${user.id}.yaml`);
+          expect(await fs.access(userRecordPath).then(() => true).catch(() => false)).toBe(true);
+
+          await db.delete('users').where({ id: user.id });
+          expect(await fs.access(userRecordPath).then(() => true).catch(() => false)).toBe(false);
+        });
+
+        it('should query with relations by reading multiple tables', async () => {
+            const user = await db.insert('users', { name: 'Author', email: 'author@test.com', age: 35 });
+            await db.insert('posts', { title: 'Post by Author', content: '...', authorId: user.id });
+            
+            const userWithPosts = await db.query().from('users').where({ id: user.id }).with({ posts: true }).first();
+            
+            expect(userWithPosts).toBeDefined();
+            expect(userWithPosts?.posts?.length).toBe(1);
+            expect(userWithPosts?.posts?.[0]?.title).toBe('Post by Author');
+        });
+      });
+
+      describe('ID Handling', () => {
+        it('should generate UUIDs for filenames and record IDs', async () => {
+            const adapter = konro.createFileAdapter({
+                format: 'json',
+                mode: 'on-demand',
+                perRecord: { dir: dbDirPath },
+            });
+            const db = konro.createDatabase({ schema: uuidTestSchema, adapter });
+
+            const user = await db.insert('uuid_users', { name: 'UUID User' });
+            
+            expect(typeof user.id).toBe('string');
+            const userRecordPath = path.join(dbDirPath, 'uuid_users', `${user.id}.json`);
+            expect(await fs.access(userRecordPath).then(() => true).catch(() => false)).toBe(true);
+            
+            const recordContent = JSON.parse(await fs.readFile(userRecordPath, 'utf-8'));
+            expect(recordContent.id).toBe(user.id);
+            expect(recordContent.name).toBe('UUID User');
+        });
+
+        it('on-demand insert should not derive lastId from existing files', async () => {
+            // Manually create a file with ID 5, but no meta file
+            const usersDir = path.join(dbDirPath, 'users');
+            await fs.mkdir(usersDir, { recursive: true });
+            await fs.writeFile(path.join(usersDir, '5.json'), JSON.stringify({ id: 5, name: 'Existing User', email: 'ex@test.com', age: 55, isActive: true }));
+            
+            const adapter = konro.createFileAdapter({ format: 'json', mode: 'on-demand', perRecord: { dir: dbDirPath } });
+            const db = konro.createDatabase({ schema: testSchema, adapter });
+            
+            // Inserting should start from ID 1 because _meta.json doesn't exist
+            const newUser = await db.insert('users', { name: 'New User', email: 'new@test.com', age: 22 });
+            expect(newUser.id).toBe(1);
+            
+            const metaContent = JSON.parse(await fs.readFile(path.join(usersDir, '_meta.json'), 'utf-8'));
+            expect(metaContent.lastId).toBe(1);
+        });
+      });
+    });
+  src/adapter.ts: >-
+    import path from 'path';
+
+    import type { DatabaseState, KRecord, TableState } from './types';
+
+    import { createEmptyState } from './operations';
+
+    import type { ColumnDefinition, KonroSchema } from './schema';
+
+    import { type Serializer, getSerializer } from './utils/serializer.util';
+
+    import { FsProvider, defaultFsProvider, writeAtomic } from './fs';
+
+    import { KonroError, KonroStorageError } from './utils/error.util';
+
+    import { TEMP_FILE_SUFFIX } from './utils/constants';
+
+
+    export interface StorageAdapter {
+      read<S extends KonroSchema<any, any>>(schema: S): Promise<DatabaseState<S>>;
+      write(state: DatabaseState<any>, schema: KonroSchema<any, any>): Promise<void>;
+      readonly mode: 'in-memory' | 'on-demand';
+    }
+
+
+    export interface FileStorageAdapter extends StorageAdapter {
+      readonly options: FileAdapterOptions;
+      readonly fs: FsProvider;
+      readonly serializer: Serializer;
+      readonly fileExtension: string;
+    }
+
+
+    type SingleFileStrategy = { single: { filepath: string }; multi?: never;
+    perRecord?: never };
+
+    type MultiFileStrategy = { multi: { dir: string }; single?: never;
+    perRecord?: never };
+
+    type PerRecordStrategy = { perRecord: { dir: string }; single?: never;
+    multi?: never };
+
+
+    export type FileAdapterOptions = {
+      format: 'json' | 'yaml' | 'csv' | 'xlsx';
+      fs?: FsProvider;
+      /**
+       * Defines the data access strategy.
+       * - `in-memory`: (Default) Loads the entire database into memory on init. Fast for small/medium datasets.
+       * - `on-demand`: Reads from the file system for each query. Slower but supports larger datasets. Requires 'multi-file' or 'per-record' strategy.
+       */
+      mode?: 'in-memory' | 'on-demand';
+    } & (SingleFileStrategy | MultiFileStrategy | PerRecordStrategy);
+
+
+    export function createFileAdapter(options: FileAdapterOptions & { mode:
+    'on-demand' }): FileStorageAdapter & { mode: 'on-demand' };
+
+    export function createFileAdapter(options: FileAdapterOptions & { mode?:
+    'in-memory' | undefined }): FileStorageAdapter & { mode: 'in-memory' };
+
+    export function createFileAdapter(options: FileAdapterOptions):
+    FileStorageAdapter;
+
+    export function createFileAdapter(options: FileAdapterOptions):
+    FileStorageAdapter {
+      const serializer = getSerializer(options.format);
+      const fileExtension = `.${options.format}`;
+      const fs = options.fs ?? defaultFsProvider;
+      const mode = options.mode ?? 'in-memory';
+
+      const isTabular = options.format === 'csv' || options.format === 'xlsx';
+      if (isTabular && (mode !== 'on-demand' || !options.multi)) {
+        throw KonroError(`The '${options.format}' format only supports 'on-demand' mode with a 'multi-file' strategy.`);
+      }
+
+      if (options.perRecord && options.format !== 'json' && options.format !== 'yaml') {
+        throw KonroError(`The 'per-record' strategy only supports 'json' or 'yaml' formats.`);
+      }
+
+      if (mode === 'on-demand' && options.single) {
+        throw KonroError("The 'on-demand' mode requires the 'multi-file' or 'per-record' storage strategy.");
+      }
+
+      const parseFile = async <T>(filepath: string, schema?: Record<string, ColumnDefinition<any>>): Promise<T | undefined> => {
+        const data = await fs.readFile(filepath);
+        if (!data) return undefined;
+        try {
+          return serializer.parse<T>(data, schema);
+        } catch (e: any) {
+          throw KonroStorageError(`Failed to parse file at "${filepath}". It may be corrupt or not a valid ${options.format} file. Original error: ${e.message}`);
+        }
+      };
+
+      const readSingle = async <S extends KonroSchema<any, any>>(schema: S): Promise<DatabaseState<S>> => {
+        const state = await parseFile<DatabaseState<any>>(options.single!.filepath);
+        // The cast is acceptable as the original code made the same implicit assumption.
+        return (state ?? createEmptyState(schema)) as DatabaseState<S>;
+      };
+
+      const readMulti = async <S extends KonroSchema<any, any>>(schema: S): Promise<DatabaseState<S>> => {
+        const dir = options.multi!.dir;
+        await fs.mkdir(dir, { recursive: true });
+        const state = createEmptyState(schema);
+        await Promise.all(
+          Object.keys(schema.tables).map(async (tableName) => {
+            const filepath = path.join(dir, `${tableName}${fileExtension}`);
+            const tableState = await parseFile<TableState<any>>(filepath, schema.tables[tableName]);
+            if (tableState) (state as any)[tableName] = tableState;
+          })
+        );
+        return state;
+      };
+
+      const readPerRecord = async <S extends KonroSchema<any, any>>(schema: S): Promise<DatabaseState<S>> => {
+        const dir = options.perRecord!.dir;
+        await fs.mkdir(dir, { recursive: true });
+        const state = createEmptyState(schema);
+
+        await Promise.all(
+          Object.keys(schema.tables).map(async (tableName) => {
+            const tableDir = path.join(dir, tableName);
+            await fs.mkdir(tableDir, { recursive: true });
+
+            // Read meta file for lastId
+            const metaPath = path.join(tableDir, '_meta.json');
+            try {
+              const metaContent = await fs.readFile(metaPath);
+              if (metaContent) {
+                (state as any)[tableName].meta = JSON.parse(metaContent);
+              }
+            } catch (e) {
+              /* ignore if not found or parsing fails, will use default */
+            }
+
+            const files = await fs.readdir(tableDir);
+            const recordFiles = files.filter((f) => !f.startsWith('_meta'));
+
+            const records = await Promise.all(
+              recordFiles.map(async (file) => {
+                const recordPath = path.join(tableDir, file);
+                const recordContent = await fs.readFile(recordPath);
+                if (!recordContent) return null;
+                // The serializer for json/yaml just parses the content, schema is ignored.
+                return serializer.parse<KRecord>(recordContent);
+              })
+            );
+
+            (state as any)[tableName].records = records.filter((r) => r !== null);
+
+            // If meta file didn't exist or was empty, derive lastId for auto-increment PKs.
+            if ((state as any)[tableName].meta.lastId === 0) {
+              const tableSchema = schema.tables[tableName];
+              const idColumn = Object.keys(tableSchema).find((key) => tableSchema[key]?.dataType === 'id' && tableSchema[key]?.options?._pk_strategy !== 'uuid');
+              if (idColumn) {
+                (state as any)[tableName].meta.lastId = (state as any)[tableName].records.reduce((maxId: number, record: KRecord) => {
+                  const id = record[idColumn];
+                  return typeof id === 'number' && id > maxId ? id : maxId;
+                }, 0);
+              }
+            }
+          })
+        );
+        return state;
+      };
+
+      const writeSingle = (state: DatabaseState<any>) => writeAtomic(options.single!.filepath, serializer.stringify(state), fs);
+
+      const writeMulti = async (state: DatabaseState<any>) => {
+        const dir = options.multi!.dir;
+        await fs.mkdir(dir, { recursive: true });
+        const writes = Object.entries(state).map(([tableName, tableState]) => {
+          const filepath = path.join(dir, `${tableName}${fileExtension}`);
+          return writeAtomic(filepath, serializer.stringify(tableState), fs);
+        });
+        await Promise.all(writes);
+      };
+
+      const writePerRecord = async (state: DatabaseState<any>, schema: KonroSchema<any, any>) => {
+        const dir = options.perRecord!.dir;
+        await fs.mkdir(dir, { recursive: true });
+
+        const writes = Object.entries(state).map(async ([tableName, tableState]) => {
+          const tableDir = path.join(dir, tableName);
+          await fs.mkdir(tableDir, { recursive: true });
+
+          // Write meta file first
+          const metaPath = path.join(tableDir, '_meta.json');
+          await writeAtomic(metaPath, JSON.stringify(tableState.meta, null, 2), fs);
+
+          const idColumn = Object.keys(schema.tables[tableName]).find((key) => schema.tables[tableName][key]?.dataType === 'id');
+          if (!idColumn) {
+            throw KonroError(`Table "${tableName}" must have an 'id' column to be used with 'per-record' storage.`);
+          }
+
+          const currentFiles = new Set(tableState.records.map((r: KRecord) => `${r[idColumn]}${fileExtension}`));
+          const existingFiles = (await fs.readdir(tableDir)).filter((f) => !f.startsWith('_meta') && !f.endsWith(TEMP_FILE_SUFFIX));
+
+          const recordWrites = tableState.records.map((record: KRecord) => writeAtomic(path.join(tableDir, `${record[idColumn]}${fileExtension}`), serializer.stringify(record), fs));
+          const recordsToDelete = existingFiles.filter((f) => !currentFiles.has(f));
+          const recordDeletes = recordsToDelete.map((f) => fs.unlink(path.join(tableDir, f)));
+
+          await Promise.all([...recordWrites, ...recordDeletes]);
+        });
+        await Promise.all(writes);
+      };
+
+      return {
+        options,
+        fs,
+        serializer,
+        fileExtension,
+        mode,
+        read: options.single ? readSingle : options.multi ? readMulti : readPerRecord,
+        write: options.single ? writeSingle : options.multi ? writeMulti : writePerRecord,
+      } as FileStorageAdapter;
+    }
+approved: true

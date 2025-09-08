@@ -1,0 +1,864 @@
+uuid: 48679469-8973-455a-b97c-502a94f6f364
+projectId: konro
+createdAt: '2025-07-08T15:18:24.155Z'
+linesAdded: 73
+linesRemoved: 52
+gitCommitMsg: 'feat(types): implement dynamic query return types'
+promptSummary: >-
+  The user asked if a query without relations would return a model type without
+  relational fields. This prompted a refactoring to make query return types more
+  precise. I implemented changes to make the query builder dynamically adjust
+  its return type based on whether `.with()` is used, and made other
+  data-modification methods consistently return non-relational base types for
+  better type safety.
+reasoning:
+  - >-
+    This is an excellent question. You've correctly identified that the return
+    types for database operations should be more precise. A query that doesn't
+    explicitly ask for relations (using `.with()`) should not include relational
+    fields in its return type. This improves type safety by preventing
+    accidental access to data that hasn't been fetched.
+  - 'I will implement the following changes to address this:'
+  - >-
+    1.  **Schema Enhancement**: I'll introduce a `db.schema.base` property that
+    holds the non-relational "base" types for each table. The existing
+    `db.schema.types` will continue to hold the full, relational types.
+  - >-
+    2.  **Smarter Query Builder**: The `db.query()` builder will now be more
+    intelligent.
+  - >-
+    *   By default, it will return the **base type** (e.g., `User` without
+    `posts` or `profile`).
+  - >-
+    *   When you use `.with({ posts: true })`, the builder's return type will
+    dynamically change to include the `posts` relation. This provides complete
+    type safety, ensuring you can only access the data you've actually
+    requested.
+  - >-
+    3.  **Consistent Return Types**: The return types for `db.insert()`,
+    `db.update()`, and `db.delete()` will also be updated to consistently return
+    the non-relational base types, as these operations do not fetch related
+    data.
+  - >-
+    These changes will make the library more robust and align it with best
+    practices seen in modern ORMs.
+  - 'Here are the modifications:'
+  - '### Step 1: Update Schema Definition'
+  - >-
+    First, I'll update the schema definition to formally distinguish between
+    base types and full relational types.
+  - '### Step 2: Refactor the Database Context and Fluent APIs'
+  - >-
+    Next, I'll refactor the core `DbContext` and the fluent query builders to
+    use these more precise types. This is the main part of the change, making
+    the query builder's return type dynamic.
+  - '### Step 3: Update Type-Checking Test'
+  - >-
+    Finally, I'll add a new test case to the type-definition test file. This
+    doesn't run as code, but it verifies that the TypeScript compiler correctly
+    enforces these new, stricter type rules.
+  - >-
+    These changes make the library significantly more type-safe and intuitive to
+    use. Thank you for the excellent feedback!
+operations:
+  - type: write
+    path: src/schema.ts
+    content: >-
+      --- src/schema.ts
+
+      +++ src/schema.ts
+
+      @@ -87,10 +87,14 @@
+         TTables extends Record<string, any>,
+         TRelations extends Record<string, any>
+       > {
+         tables: TTables;
+         relations: TRelations;
+      -  types: Models<TTables, TRelations, BaseModels<TTables>>;
+
+      -  create: CreateModels<TTables, BaseModels<TTables>>;
+
+      +  /** The full, relational types for each table model. */
+
+      +  types: Models<TTables, TRelations, BaseModels<TTables>>;
+
+      +  /** The base types for each table model, without any relations. */
+
+      +  base: BaseModels<TTables>;
+
+      +  /** The types for creating new records, with defaults and `id` made
+      optional. */
+
+      +  create: CreateModels<TTables, BaseModels<TTables>>;
+       }
+       
+       /** The definition for a database column, created by helpers like `konro.string()`. */
+      @@ -134,8 +138,9 @@
+           tables: schemaDef.tables,
+           relations: relations as any, // Cast to bypass complex conditional type issue
+           // Types are applied via the return type annotation, these are just placeholders at runtime.
+           types: null as any,
+      -    create: {} as any,
+
+      +    base: {} as any,
+
+      +    create: {} as any,
+         };
+       };
+    patchStrategy: new-unified
+  - type: write
+    path: src/db.ts
+    content: >-
+      import { AggregationDefinition, ColumnDefinition, KonroSchema,
+      RelationDefinition } from './schema';
+
+      import { StorageAdapter } from './adapter';
+
+      import { DatabaseState, KRecord } from './types';
+
+      import { _queryImpl, _insertImpl, _updateImpl, _deleteImpl,
+      createEmptyState as createEmptyStateImpl, QueryDescriptor, _aggregateImpl,
+      AggregationDescriptor } from './operations';
+
+      import { createPredicateFromPartial } from './utils/predicate.util';
+
+
+      // A helper to normalize a predicate argument
+
+      const normalizePredicate = <T extends KRecord>(
+        predicate: Partial<T> | ((record: T) => boolean)
+      ): ((record: KRecord) => boolean) =>
+        // The cast is necessary due to function argument contravariance.
+        // The internal operations work on the wider `KRecord`, while the fluent API provides the specific `T`.
+        (typeof predicate === 'function' ? predicate : createPredicateFromPartial(predicate)) as (record: KRecord) => boolean;
+
+      // --- TYPE HELPERS for Fluent API ---
+
+
+      type RelatedModel<T> = T extends (infer R)[] ? R : T extends (infer R |
+      null) ? R : never;
+
+
+      // TAll is the full relational model type, e.g. schema.types.users
+
+      type WithArgument<TAll> = {
+        // K is a relation name like 'posts' or 'profile'
+        [K in keyof TAll as NonNullable<TAll[K]> extends any[] | object ? K : never]?: boolean | {
+          where?: (record: RelatedModel<NonNullable<TAll[K]>>) => boolean;
+          select?: Record<string, ColumnDefinition<unknown>>;
+        };
+      };
+
+
+      type ResolveWith<
+        S extends KonroSchema<any, any>,
+        TName extends keyof S['tables'],
+        TWith extends WithArgument<S['types'][TName]>
+      > = {
+        // K will be 'posts', 'profile', etc.
+        [K in keyof TWith as K extends keyof S['types'][TName] ? K : never]: S['types'][TName][K];
+      };
+
+
+
+      // --- TYPE-SAFE FLUENT API BUILDERS ---
+
+
+      interface ChainedQueryBuilder<S extends KonroSchema<any, any>, TName
+      extends keyof S['tables'], TReturn> {
+        select(fields: Record<string, ColumnDefinition<unknown> | RelationDefinition>): this;
+        where(predicate: Partial<S['base'][TName]> | ((record: S['base'][TName]) => boolean)): this;
+        with<W extends WithArgument<S['types'][TName]>>(relations: W): ChainedQueryBuilder<S, TName, TReturn & ResolveWith<S, TName, W>>;
+        limit(count: number): this;
+        offset(count: number): this;
+        all(): TReturn[];
+        first(): TReturn | null;
+        aggregate<TAggs extends Record<string, AggregationDefinition>>(
+          aggregations: TAggs
+        ): { [K in keyof TAggs]: number | null };
+      }
+
+
+      interface QueryBuilder<S extends KonroSchema<any, any>> {
+        from<T extends keyof S['tables']>(tableName: T): ChainedQueryBuilder<S, T, S['base'][T]>;
+      }
+
+
+      interface UpdateBuilder<S extends KonroSchema<any, any>, TBase> {
+        set(data: Partial<TBase>): {
+          where(predicate: Partial<TBase> | ((record: TBase) => boolean)): [DatabaseState<S>, TBase[]];
+        };
+      }
+
+
+      interface DeleteBuilder<S extends KonroSchema<any, any>, TBase> {
+        where(predicate: Partial<TBase> | ((record: TBase) => boolean)): [DatabaseState<S>, TBase[]];
+      }
+
+
+      export interface DbContext<S extends KonroSchema<any, any>> {
+        schema: S;
+        adapter: StorageAdapter;
+        read(): Promise<DatabaseState<S>>;
+        write(state: DatabaseState<S>): Promise<void>;
+        createEmptyState(): DatabaseState<S>;
+
+        query(state: DatabaseState<S>): QueryBuilder<S>;
+        insert<T extends keyof S['tables']>(state: DatabaseState<S>, tableName: T, values: S['create'][T]): [DatabaseState<S>, S['base'][T]];
+        insert<T extends keyof S['tables']>(state: DatabaseState<S>, tableName: T, values: Readonly<S['create'][T]>[]): [DatabaseState<S>, S['base'][T][]];
+        update<T extends keyof S['tables']>(state: DatabaseState<S>, tableName: T): UpdateBuilder<S, S['base'][T]>;
+        delete<T extends keyof S['tables']>(state: DatabaseState<S>, tableName: T): DeleteBuilder<S, S['base'][T]>;
+      }
+
+
+      export const createDatabase = <S extends KonroSchema<any, any>>(options: {
+      schema: S, adapter: StorageAdapter }): DbContext<S> => {
+        const { schema, adapter } = options;
+
+        return {
+          schema,
+          adapter,
+          read: () => adapter.read(schema),
+          write: (state) => adapter.write(state),
+          createEmptyState: () => createEmptyStateImpl(schema),
+
+          insert: (<T extends keyof S['tables']>(
+            state: DatabaseState<S>,
+            tableName: T,
+            values: S['create'][T] | Readonly<S['create'][T]>[]
+          ): [DatabaseState<S>, S['base'][T] | S['base'][T][]] => {
+            const valsArray = Array.isArray(values) ? values : [values];
+            const [newState, inserted] = _insertImpl(state as DatabaseState, schema, tableName as string, valsArray as KRecord[]);
+            const result = Array.isArray(values) ? inserted : inserted[0];
+            return [newState as DatabaseState<S>, result] as [DatabaseState<S>, S['base'][T] | S['base'][T][]];
+          }) as {
+            <T extends keyof S['tables']>(state: DatabaseState<S>, tableName: T, values: S['create'][T]): [DatabaseState<S>, S['base'][T]];
+            <T extends keyof S['tables']>(state: DatabaseState<S>, tableName: T, values: Readonly<S['create'][T]>[]): [DatabaseState<S>, S['base'][T][]];
+          },
+
+          query: (state: DatabaseState<S>): QueryBuilder<S> => ({
+            from: <TName extends keyof S['tables']>(tableName: TName): ChainedQueryBuilder<S, TName, S['base'][TName]> => {
+              const createBuilder = <TReturn>(currentDescriptor: QueryDescriptor): ChainedQueryBuilder<S, TName, TReturn> => ({
+                select(fields) {
+                  return createBuilder<TReturn>({ ...currentDescriptor, select: fields });
+                },
+                where(predicate) {
+                  return createBuilder<TReturn>({ ...currentDescriptor, where: normalizePredicate(predicate as (record: KRecord) => boolean) });
+                },
+                with<W extends WithArgument<S['types'][TName]>>(relations: W) {
+                  const newWith = { ...currentDescriptor.with, ...(relations as QueryDescriptor['with']) };
+                  return createBuilder<TReturn & ResolveWith<S, TName, W>>({ ...currentDescriptor, with: newWith });
+                },
+                limit(count) {
+                  return createBuilder<TReturn>({ ...currentDescriptor, limit: count });
+                },
+                offset(count) {
+                  return createBuilder<TReturn>({ ...currentDescriptor, offset: count });
+                },
+                all: (): TReturn[] => _queryImpl(state as DatabaseState, schema, currentDescriptor) as unknown as TReturn[],
+                first: (): TReturn | null => (_queryImpl(state as DatabaseState, schema, { ...currentDescriptor, limit: 1 })[0] ?? null) as unknown as TReturn | null,
+                aggregate: <TAggs extends Record<string, AggregationDefinition>>(aggregations: TAggs): { [K in keyof TAggs]: number | null } => {
+                  const aggDescriptor: AggregationDescriptor = { ...currentDescriptor, aggregations };
+                  return _aggregateImpl(state as DatabaseState, schema, aggDescriptor) as { [K in keyof TAggs]: number | null };
+                },
+              });
+              return createBuilder<S['base'][TName]>({ tableName: tableName as string });
+            },
+          }),
+
+          update: <T extends keyof S['tables']>(state: DatabaseState<S>, tableName: T): UpdateBuilder<S, S['base'][T]> => ({
+            set: (data) => ({
+              where: (predicate) => {
+                const [newState, updatedRecords] = _updateImpl(state as DatabaseState, schema, tableName as string, data as Partial<KRecord>, normalizePredicate(predicate as (record: KRecord) => boolean));
+                return [newState as DatabaseState<S>, updatedRecords as S['base'][T][]];
+              },
+            }),
+          }),
+
+          delete: <T extends keyof S['tables']>(state: DatabaseState<S>, tableName: T): DeleteBuilder<S, S['base'][T]> => ({
+            where: (predicate) => {
+              const [newState, deletedRecords] = _deleteImpl(state as DatabaseState, tableName as string, normalizePredicate(predicate as (record: KRecord) => boolean));
+              return [newState as DatabaseState<S>, deletedRecords as S['base'][T][]];
+            },
+          }),
+        };
+      };
+    patchStrategy: replace
+  - type: write
+    path: test/integration/Types/InferredTypes.test-d.ts
+    content: >-
+      --- test/integration/Types/InferredTypes.test-d.ts
+
+      +++ test/integration/Types/InferredTypes.test-d.ts
+
+      @@ -39,5 +39,15 @@
+       
+           // @ts-expect-error - 'nonExistentRelation' is not a valid relation on 'users'
+           db.query(state).from('users').with({ nonExistentRelation: true });
+      +
+
+      +    // Test 5: A query without .with() should return the base type,
+      without relations.
+
+      +    const baseUser = db.query(state).from('users').where({ id: 1
+      }).first();
+
+      +    // This should be valid
+
+      +    baseUser?.name;
+
+      +    // @ts-expect-error - 'posts' does not exist on base user type, as
+      .with() was not used.
+
+      +    baseUser?.posts;
+
+      +
+
+      +    // Test 6: A query with .with() should return the relations, which
+      are now accessible.
+
+      +    const userWithPosts = db.query(state).from('users').where({ id: 1
+      }).with({ posts: true }).first();
+
+      +    userWithPosts?.posts; // This should be valid and typed as Post[] |
+      undefined
+         });
+       });
+    patchStrategy: new-unified
+snapshot:
+  src/schema.ts: >-
+    //
+
+    // Konro: The Type-Safe, Functional ORM for JSON/YAML
+
+    //
+
+    // ## Pillar I: The Recipe (Schema Definition)
+
+    //
+
+    // This file contains the core logic for defining a database schema. It is
+    designed to be
+
+    // both the runtime source of truth for validation and the static source of
+    truth for
+
+    // TypeScript types. By using phantom types and inference, we can create a
+    fully-typed
+
+    // `db` object from a single schema definition object, eliminating the need
+    for manual
+
+    // type declarations (`interface User { ... }`) and ensuring they never get
+    out of sync.
+
+    //
+
+
+    // --- TYPE INFERENCE HELPERS ---
+
+
+    /** Infers the underlying TypeScript type from a `ColumnDefinition`. e.g.,
+    `ColumnDefinition<string>` => `string`. */
+
+    type InferColumnType<C> = C extends ColumnDefinition<infer T> ? T : never;
+
+
+    /** A mapping of table names to their base model types (columns only, no
+    relations). */
+
+    export type BaseModels<TTables extends Record<string, any>> = {
+      [TableName in keyof TTables]: {
+        [ColumnName in keyof TTables[TableName]]: InferColumnType<TTables[TableName][ColumnName]>;
+      };
+    };
+
+
+    /**
+     * A mapping of table names to their full model types, including relations.
+     * This is a recursive type that resolves relationships to other full models.
+     */
+    type Models<
+      TTables extends Record<string, any>,
+      TRelations extends Record<string, any>,
+      TBaseModels extends Record<keyof TTables, any>
+    > = {
+      [TableName in keyof TTables]: TBaseModels[TableName] &
+        (TableName extends keyof TRelations
+          ? {
+              [RelationName in keyof TRelations[TableName]]?: TRelations[TableName][RelationName] extends OneRelationDefinition
+                ? // `targetTable` is a string literal, so we can use it to index `Models`
+                  Models<TTables, TRelations, TBaseModels>[TRelations[TableName][RelationName]['targetTable']] | null
+                : TRelations[TableName][RelationName] extends ManyRelationDefinition
+                ? Models<TTables, TRelations, TBaseModels>[TRelations[TableName][RelationName]['targetTable']][]
+                : never;
+            }
+          : {});
+    };
+
+
+    /** Finds all column names in a table definition that are optional for
+    insertion (i.e., `id` or has a `default`). */
+
+    /** Finds all column names in a table definition that are optional for
+    insertion (i.e., `id` or has a `default`). */
+
+    type OptionalCreateKeys<TTableDef> = {
+      [K in keyof TTableDef]: TTableDef[K] extends { dataType: 'id' }
+        ? K
+        : TTableDef[K] extends { options: { default: any } }
+        ? K
+        : never;
+    }[keyof TTableDef];
+
+
+    /**
+     * A mapping of table names to their "create" types, used for `db.insert`.
+     * It takes the base model, makes keys with defaults optional, and removes the `id` field.
+     */
+    type CreateModels<
+      TTables extends Record<string, any>,
+      TBaseModels extends Record<keyof TTables, any>
+    > = {
+      [TableName in keyof TTables]: Omit<
+        {
+          // Required fields
+          [K in Exclude<keyof TBaseModels[TableName], OptionalCreateKeys<TTables[TableName]>>]: TBaseModels[TableName][K];
+        } & {
+          // Optional fields
+          [K in OptionalCreateKeys<TTables[TableName]>]?: TBaseModels[TableName][K];
+        },
+        // 'id' is always omitted from create types
+        'id'
+      >;
+    };
+
+
+
+    // --- PUBLIC API TYPES ---
+
+
+    /** The publicly exposed structure of a fully-processed Konro schema. */
+
+    export interface KonroSchema<
+      TTables extends Record<string, any>,
+      TRelations extends Record<string, any>
+    > {
+      tables: TTables;
+      relations: TRelations;
+      types: Models<TTables, TRelations, BaseModels<TTables>>;
+      create: CreateModels<TTables, BaseModels<TTables>>;
+    }
+
+
+    /** The definition for a database column, created by helpers like
+    `konro.string()`. */
+
+    export interface ColumnDefinition<T> {
+      readonly _type: 'column';
+      readonly dataType: 'id' | 'string' | 'number' | 'boolean' | 'date' | 'object';
+      readonly options: any;
+      readonly _tsType?: T; // Phantom type, does not exist at runtime
+    }
+
+
+    /** The definition for a table relationship, created by `konro.one()` or
+    `konro.many()`. */
+
+    interface BaseRelationDefinition {
+      readonly _type: 'relation';
+      readonly targetTable: string;
+      readonly on: string;
+      readonly references: string;
+    }
+
+
+    interface OneRelationDefinition extends BaseRelationDefinition {
+      readonly relationType: 'one';
+    }
+
+
+    interface ManyRelationDefinition extends BaseRelationDefinition {
+      readonly relationType: 'many';
+    }
+
+
+    export type RelationDefinition = OneRelationDefinition |
+    ManyRelationDefinition;
+
+
+    /** The definition for a data aggregation, created by `konro.count()`,
+    `konro.sum()`, etc. */
+
+    export interface AggregationDefinition {
+      readonly _type: 'aggregation';
+      readonly aggType: 'count' | 'sum' | 'avg' | 'min' | 'max';
+      readonly column?: string;
+    }
+
+
+
+    // --- SCHEMA BUILDER FUNCTION ---
+
+
+    /**
+     * Defines the structure, types, and relations of your database.
+     * This is the single source of truth for both runtime validation and static types.
+     *
+     * @param schemaDef The schema definition object.
+     * @returns A processed schema object with inferred types attached.
+     */
+    export const createSchema = <
+      const TDef extends {
+        tables: Record<string, Record<string, ColumnDefinition<any>>>;
+        relations?: (tables: TDef['tables']) => Record<string, Record<string, BaseRelationDefinition>>;
+      }
+    >(
+      schemaDef: TDef
+    ): KonroSchema<TDef['tables'], TDef['relations'] extends (...args: any) =>
+    any ? ReturnType<TDef['relations']> : {}> => { // eslint-disable-line
+      const relations = schemaDef.relations ? schemaDef.relations(schemaDef.tables) : {};
+      return {
+        tables: schemaDef.tables,
+        relations: relations as any, // Cast to bypass complex conditional type issue
+        // Types are applied via the return type annotation, these are just placeholders at runtime.
+        types: null as any,
+        create: {} as any,
+      };
+    };
+
+
+
+    // --- COLUMN DEFINITION HELPERS ---
+
+
+    const createColumn = <T>(dataType: ColumnDefinition<T>['dataType'], options:
+    object | undefined, tsType: T): ColumnDefinition<T> => ({
+      _type: 'column',
+      dataType,
+      options,
+      _tsType: tsType,
+    });
+
+
+    /** A managed, auto-incrementing integer primary key. */
+
+    export const id = () => createColumn<number>('id', { unique: true }, 0);
+
+    /** A string column with optional validation. */
+
+    export const string = (options?: { unique?: boolean; default?: string | (()
+    => string); min?: number; max?: number; format?: 'email' | 'uuid' | 'url' })
+    => createColumn<string>('string', options, '');
+
+    /** A number column with optional validation. */
+
+    export const number = (options?: { unique?: boolean; default?: number | (()
+    => number); min?: number; max?: number; type?: 'integer' }) =>
+    createColumn<number>('number', options, 0);
+
+    /** A boolean column. */
+
+    export const boolean = (options?: { default?: boolean | (() => boolean) })
+    => createColumn<boolean>('boolean', options, false);
+
+    /** A date column, stored as an ISO string but hydrated as a Date object. */
+
+    export const date = (options?: { default?: Date | (() => Date) }) =>
+    createColumn<Date>('date', options, new Date());
+
+    /** A column for storing arbitrary JSON objects, with a generic for type
+    safety. */
+
+    export const object = <T extends Record<string, any>>(options?: { default?:
+    T | (() => T) }): ColumnDefinition<T> => ({ _type: 'column', dataType:
+    'object', options });
+
+
+
+    // --- RELATIONSHIP DEFINITION HELPERS ---
+
+
+    /** Defines a `one-to-one` or `many-to-one` relationship. */
+
+    export const one = <T extends string>(targetTable: T, options: { on: string;
+    references: string }): OneRelationDefinition & { targetTable: T } => ({
+      _type: 'relation',
+      relationType: 'one',
+      targetTable,
+      ...options,
+    });
+
+
+    /** Defines a `one-to-many` relationship. */
+
+    export const many = <T extends string>(targetTable: T, options: { on:
+    string; references: string }): ManyRelationDefinition & { targetTable: T }
+    => ({
+      _type: 'relation',
+      relationType: 'many',
+      targetTable,
+      ...options,
+    });
+
+
+
+    // --- AGGREGATION DEFINITION HELPERS ---
+
+
+    /** Aggregation to count records. */
+
+    export const count = (): AggregationDefinition => ({ _type: 'aggregation',
+    aggType: 'count' });
+
+    /** Aggregation to sum a numeric column. */
+
+    export const sum = (column: string): AggregationDefinition => ({ _type:
+    'aggregation', aggType: 'sum', column });
+
+    /** Aggregation to average a numeric column. */
+
+    export const avg = (column: string): AggregationDefinition => ({ _type:
+    'aggregation', aggType: 'avg', column });
+
+    /** Aggregation to find the minimum value in a numeric column. */
+
+    export const min = (column: string): AggregationDefinition => ({ _type:
+    'aggregation', aggType: 'min', column });
+
+    /** Aggregation to find the maximum value in a numeric column. */
+
+    export const max = (column: string): AggregationDefinition => ({ _type:
+    'aggregation', aggType: 'max', column });
+  src/db.ts: >
+    import { AggregationDefinition, ColumnDefinition, KonroSchema,
+    RelationDefinition } from './schema';
+
+    import { StorageAdapter } from './adapter';
+
+    import { DatabaseState, KRecord } from './types';
+
+    import { _queryImpl, _insertImpl, _updateImpl, _deleteImpl, createEmptyState
+    as createEmptyStateImpl, QueryDescriptor, _aggregateImpl,
+    AggregationDescriptor } from './operations';
+
+    import { createPredicateFromPartial } from './utils/predicate.util';
+
+
+    // A helper to normalize a predicate argument
+
+    const normalizePredicate = <T extends KRecord>(
+      predicate: Partial<T> | ((record: T) => boolean)
+    ): ((record: KRecord) => boolean) =>
+      // The cast is necessary due to function argument contravariance.
+      // The internal operations work on the wider `KRecord`, while the fluent API provides the specific `T`.
+      (typeof predicate === 'function' ? predicate : createPredicateFromPartial(predicate)) as (record: KRecord) => boolean;
+
+    // --- TYPE HELPERS for Fluent API ---
+
+
+    type RelatedModel<T> = T extends (infer R)[] ? R : T extends (infer R |
+    null) ? R : never;
+
+
+    type WithArgument<T> = {
+      [K in keyof T as NonNullable<T[K]> extends any[] | object ? K : never]?: boolean | {
+        where?: (record: RelatedModel<NonNullable<T[K]>>) => boolean;
+        select?: Record<string, ColumnDefinition<unknown>>; // Not fully typed yet, but better than nothing
+      };
+    };
+
+
+    // --- TYPE-SAFE FLUENT API BUILDERS ---
+
+
+    interface ChainedQueryBuilder<T> {
+      select(fields: Record<string, ColumnDefinition<unknown> | RelationDefinition>): this;
+      where(predicate: Partial<T> | ((record: T) => boolean)): this;
+      with(relations: WithArgument<T>): this;
+      limit(count: number): this;
+      offset(count: number): this;
+      all(): T[];
+      first(): T | null;
+      aggregate<TAggs extends Record<string, AggregationDefinition>>(
+        aggregations: TAggs
+      ): { [K in keyof TAggs]: number | null };
+    }
+
+
+    interface QueryBuilder<S extends KonroSchema<any, any>> {
+      from<T extends keyof S['tables']>(tableName: T): ChainedQueryBuilder<S['types'][T]>;
+    }
+
+
+    interface UpdateBuilder<S extends KonroSchema<any, any>, T> {
+      set(data: Partial<T>): {
+        where(predicate: Partial<T> | ((record: T) => boolean)): [DatabaseState<S>, T[]];
+      };
+    }
+
+
+    interface DeleteBuilder<S extends KonroSchema<any, any>, T> {
+      where(predicate: Partial<T> | ((record: T) => boolean)): [DatabaseState<S>, T[]];
+    }
+
+
+    export interface DbContext<S extends KonroSchema<any, any>> {
+      schema: S;
+      adapter: StorageAdapter;
+      read(): Promise<DatabaseState<S>>;
+      write(state: DatabaseState<S>): Promise<void>;
+      createEmptyState(): DatabaseState<S>;
+
+      query(state: DatabaseState<S>): QueryBuilder<S>;
+      insert<T extends keyof S['tables']>(state: DatabaseState<S>, tableName: T, values: S['create'][T]): [DatabaseState<S>, S['types'][T]];
+      insert<T extends keyof S['tables']>(state: DatabaseState<S>, tableName: T, values: Readonly<S['create'][T]>[]): [DatabaseState<S>, S['types'][T][]];
+      update<T extends keyof S['tables']>(state: DatabaseState<S>, tableName: T): UpdateBuilder<S, S['types'][T]>;
+      delete<T extends keyof S['tables']>(state: DatabaseState<S>, tableName: T): DeleteBuilder<S, S['types'][T]>;
+    }
+
+
+    export const createDatabase = <S extends KonroSchema<any, any>>(options: {
+    schema: S, adapter: StorageAdapter }): DbContext<S> => {
+      const { schema, adapter } = options;
+
+      return {
+        schema,
+        adapter,
+        read: () => adapter.read(schema),
+        write: (state) => adapter.write(state),
+        createEmptyState: () => createEmptyStateImpl(schema),
+
+        insert: (<T extends keyof S['tables']>(
+          state: DatabaseState<S>,
+          tableName: T,
+          values: S['create'][T] | Readonly<S['create'][T]>[]
+        ): [DatabaseState<S>, S['types'][T] | S['types'][T][]] => {
+          const valsArray = Array.isArray(values) ? values : [values];
+          const [newState, inserted] = _insertImpl(state as DatabaseState, schema, tableName as string, valsArray as KRecord[]);
+          const result = Array.isArray(values) ? inserted : inserted[0];
+          return [newState as DatabaseState<S>, result] as [DatabaseState<S>, S['types'][T] | S['types'][T][]];
+        }) as {
+          <T extends keyof S['tables']>(state: DatabaseState<S>, tableName: T, values: S['create'][T]): [DatabaseState<S>, S['types'][T]];
+          <T extends keyof S['tables']>(state: DatabaseState<S>, tableName: T, values: Readonly<S['create'][T]>[]): [DatabaseState<S>, S['types'][T][]];
+        },
+
+        query: (state: DatabaseState<S>): QueryBuilder<S> => ({
+          from: <T extends keyof S['tables']>(tableName: T): ChainedQueryBuilder<S['types'][T]> => {
+            const descriptor: QueryDescriptor = { tableName: tableName as string };
+
+            const builder: ChainedQueryBuilder<S['types'][T]> = {
+              select: (fields) => {
+                descriptor.select = fields;
+                return builder;
+              },
+              where: (predicate) => {
+                descriptor.where = normalizePredicate(predicate as (record: KRecord) => boolean);
+                return builder;
+              },
+              with: (relations) => {
+                descriptor.with = relations as QueryDescriptor['with'];
+                return builder;
+              },
+              limit: (count) => {
+                descriptor.limit = count;
+                return builder;
+              },
+              offset: (count) => {
+                descriptor.offset = count;
+                return builder;
+              },
+              all: (): S['types'][T][] => _queryImpl(state as DatabaseState, schema, descriptor) as unknown as S['types'][T][],
+              first: (): S['types'][T] | null => (_queryImpl(state as DatabaseState, schema, { ...descriptor, limit: 1 })[0] ?? null) as unknown as S['types'][T] | null,
+              aggregate: <TAggs extends Record<string, AggregationDefinition>>(aggregations: TAggs): { [K in keyof TAggs]: number | null } => {
+                const aggDescriptor: AggregationDescriptor = { ...descriptor, aggregations };
+                return _aggregateImpl(state as DatabaseState, schema, aggDescriptor) as { [K in keyof TAggs]: number | null };
+              },
+            };
+            return builder;
+          },
+        }),
+
+        update: <T extends keyof S['tables']>(state: DatabaseState<S>, tableName: T): UpdateBuilder<S, S['types'][T]> => ({
+          set: (data) => ({
+            where: (predicate) => {
+              const [newState, updatedRecords] = _updateImpl(state as DatabaseState, schema, tableName as string, data as Partial<KRecord>, normalizePredicate(predicate as (record: KRecord) => boolean));
+              return [newState as DatabaseState<S>, updatedRecords as S['types'][T][]];
+            },
+          }),
+        }),
+
+        delete: <T extends keyof S['tables']>(state: DatabaseState<S>, tableName: T): DeleteBuilder<S, S['types'][T]> => ({
+          where: (predicate) => {
+            const [newState, deletedRecords] = _deleteImpl(state as DatabaseState, tableName as string, normalizePredicate(predicate as (record: KRecord) => boolean));
+            return [newState as DatabaseState<S>, deletedRecords as S['types'][T][]];
+          },
+        }),
+      };
+    };
+  test/integration/Types/InferredTypes.test-d.ts: |
+    import { describe, it } from 'bun:test';
+    import { konro } from '../../../src/index';
+    import { schemaDef } from '../../util';
+
+    /**
+     * NOTE: This is a type definition test file.
+     * It is not meant to be run, but to be checked by `tsc`.
+     * The presence of `// @ts-expect-error` comments indicates
+     * that a TypeScript compilation error is expected on the next line.
+     * If the error does not occur, `tsc` will fail, which is the desired behavior for this test.
+     */
+    describe('Integration > Types > InferredTypes', () => {
+      it('should pass type checks', () => {
+        const testSchema = konro.createSchema(schemaDef);
+        type User = typeof testSchema.types.users;
+
+        // Test 1: Inferred User type should have correct primitive and relational fields.
+        const user: User = {
+          id: 1,
+          name: 'Alice',
+          email: 'alice@example.com',
+          age: 30,
+          isActive: true,
+          posts: [{
+            id: 1,
+            title: 'Post 1',
+            content: '...',
+            authorId: 1,
+            publishedAt: new Date(),
+          }],
+          profile: null,
+        };
+
+            // This should be valid
+            user.name; // Accessing for type check
+        const db = konro.createDatabase({ schema: testSchema, adapter: {} as any });
+        const state = db.createEmptyState();
+
+        // Test 2: Should cause a TS error if a non-existent field is used in a where clause.
+        // @ts-expect-error - 'nonExistentField' does not exist on type 'User'.
+        db.query(state).from('users').where({ nonExistentField: 'value' });
+
+        // This should be valid
+        db.query(state).from('users').where({ name: 'Alice' });
+
+        // Test 3: Should cause a TS error if a wrong type is passed to db.insert().
+        // @ts-expect-error - 'age' should be a number, not a string.
+        db.insert(state, 'users', { name: 'Bob', email: 'bob@test.com', age: 'twenty-five' });
+
+        // This should be valid - using type assertion for test-only code
+        // @ts-ignore - This is a type test only, not runtime code
+        db.insert(state, 'users', { name: 'Bob', email: 'bob@test.com', age: 25 });
+
+        // Test 4: Nested .with clause should be typed correctly
+        db.query(state).from('users').with({
+          posts: {
+            where: (post) => post.title.startsWith('A') // post is typed as Post
+          }
+        }).first();
+
+        // @ts-expect-error - 'nonExistentRelation' is not a valid relation on 'users'
+        db.query(state).from('users').with({ nonExistentRelation: true });
+      });
+    });
+approved: true

@@ -1,0 +1,175 @@
+uuid: 6b56658a-3603-4f51-b844-48612140b080
+projectId: konro
+createdAt: '2025-07-09T02:20:25.889Z'
+linesAdded: 74
+linesRemoved: 71
+gitCommitMsg: 'fix(core): correct syntax error in file adapter refactor'
+promptSummary: >-
+  User reported build errors in `src/adapter.ts` after my previous refactoring.
+  The errors were due to an invalid syntax (`async <T>...` in a ternary
+  expression). I'm fixing this by reverting to separate function definitions for
+  single/multi-file strategies, which allows for correct generic typing, and
+  then selecting the appropriate function with a ternary. This approach is still
+  significantly DRYer than the original code but is syntactically correct and
+  type-safe.
+reasoning:
+  - >-
+    I apologize for the syntax errors in the previous patch. The attempt to make
+    the code "radically DRY" with a ternary operator for a generic function was
+    syntactically incorrect.
+  - >-
+    I've corrected the approach. The `adapter.ts` file is now refactored to be
+    both DRY and syntactically valid. Here's how:
+  - >-
+    1.  **Centralized Parsing:** The `parseFile` helper function is kept, as it
+    successfully removes redundant file reading and error handling logic.
+  - >-
+    2.  **Separate Function Definitions:** Instead of an inline ternary, I've
+    defined `readSingle`/`readMulti` and `writeSingle`/`writeMulti` helper
+    functions. This allows for correct generic type definitions on the `read`
+    functions, which was the source of the previous error.
+  - >-
+    3.  **Conditional Selection:** The final `read` and `write` methods for the
+    adapter are then selected using a simple, clean ternary operator
+    (`options.single ? readSingle : readMulti`), assigning the correct function
+    based on the storage strategy.
+  - >-
+    4.  **Single Return:** The adapter object is constructed in a single
+    `return` statement, which is cleaner than the original `if/else` blocks.
+  - >-
+    This revised approach maintains the significant reduction in code
+    duplication and the bug fix from the previous attempt, but in a way that is
+    type-safe and syntactically correct. I will apply this fix by replacing the
+    entire content of `src/adapter.ts`.
+operations:
+  - type: write
+    path: src/adapter.ts
+    content: >-
+      import path from 'path';
+
+      import type { DatabaseState, TableState } from './types';
+
+      import { createEmptyState } from './operations';
+
+      import type { ColumnDefinition, KonroSchema } from './schema';
+
+      import { type Serializer, getSerializer } from './utils/serializer.util';
+
+      import { FsProvider, defaultFsProvider, writeAtomic } from './fs';
+
+      import { KonroError, KonroStorageError } from './utils/error.util';
+
+
+      export interface StorageAdapter {
+        read<S extends KonroSchema<any, any>>(schema: S): Promise<DatabaseState<S>>;
+        write(state: DatabaseState<any>): Promise<void>;
+        readonly mode: 'in-memory' | 'on-demand';
+      }
+
+
+      export interface FileStorageAdapter extends StorageAdapter {
+        readonly options: FileAdapterOptions;
+        readonly fs: FsProvider;
+        readonly serializer: Serializer;
+        readonly fileExtension: string;
+      }
+
+
+      type SingleFileStrategy = { single: { filepath: string }; multi?: never };
+
+      type MultiFileStrategy = { multi: { dir: string }; single?: never };
+
+
+      export type FileAdapterOptions = {
+        format: 'json' | 'yaml' | 'csv' | 'xlsx';
+        fs?: FsProvider;
+        /**
+         * Defines the data access strategy.
+         * - `in-memory`: (Default) Loads the entire database into memory on read. Fast for small/medium datasets.
+         * - `on-demand`: Reads from the file system for each query. Slower but supports larger datasets. Requires the 'multi-file' strategy.
+         */
+        mode?: 'in-memory' | 'on-demand';
+      } & (SingleFileStrategy | MultiFileStrategy);
+
+
+      export function createFileAdapter(options: FileAdapterOptions & { mode:
+      'on-demand' }): FileStorageAdapter & { mode: 'on-demand' };
+
+      export function createFileAdapter(options: FileAdapterOptions & { mode?:
+      'in-memory' | undefined }): FileStorageAdapter & { mode: 'in-memory' };
+
+      export function createFileAdapter(options: FileAdapterOptions):
+      FileStorageAdapter;
+
+      export function createFileAdapter(options: FileAdapterOptions):
+      FileStorageAdapter {
+        const serializer = getSerializer(options.format);
+        const fileExtension = `.${options.format}`;
+        const fs = options.fs ?? defaultFsProvider;
+        const mode = options.mode ?? 'in-memory';
+
+        const isTabular = options.format === 'csv' || options.format === 'xlsx';
+        if (isTabular && (mode !== 'on-demand' || !options.multi)) {
+          throw KonroError(`The '${options.format}' format only supports 'on-demand' mode with a 'multi-file' strategy.`);
+        }
+
+        if (mode === 'on-demand' && options.single) {
+          throw KonroError("The 'on-demand' mode requires the 'multi-file' storage strategy.");
+        }
+
+        const parseFile = async <T>(filepath: string, schema?: Record<string, ColumnDefinition<any>>): Promise<T | undefined> => {
+          const data = await fs.readFile(filepath);
+          if (!data) return undefined;
+          try {
+            return serializer.parse<T>(data, schema);
+          } catch (e: any) {
+            throw KonroStorageError(`Failed to parse file at "${filepath}". It may be corrupt or not a valid ${options.format} file. Original error: ${e.message}`);
+          }
+        };
+
+        const readSingle = async <S extends KonroSchema<any, any>>(schema: S): Promise<DatabaseState<S>> => {
+          const state = await parseFile<DatabaseState<any>>(options.single!.filepath);
+          // The cast is acceptable as the original code made the same implicit assumption.
+          return (state ?? createEmptyState(schema)) as DatabaseState<S>;
+        };
+
+        const readMulti = async <S extends KonroSchema<any, any>>(schema: S): Promise<DatabaseState<S>> => {
+          const dir = options.multi!.dir;
+          await fs.mkdir(dir, { recursive: true });
+          const state = createEmptyState(schema);
+          await Promise.all(
+            Object.keys(schema.tables).map(async (tableName) => {
+              const filepath = path.join(dir, `${tableName}${fileExtension}`);
+              const tableState = await parseFile<TableState<any>>(filepath, schema.tables[tableName]);
+              if (tableState) (state as any)[tableName] = tableState;
+            })
+          );
+          return state;
+        };
+
+        const writeSingle = (state: DatabaseState<any>) => writeAtomic(options.single!.filepath, serializer.stringify(state), fs);
+
+        const writeMulti = async (state: DatabaseState<any>) => {
+          const dir = options.multi!.dir;
+          await fs.mkdir(dir, { recursive: true });
+          const writes = Object.entries(state).map(([tableName, tableState]) => {
+            const filepath = path.join(dir, `${tableName}${fileExtension}`);
+            return writeAtomic(filepath, serializer.stringify(tableState), fs);
+          });
+          await Promise.all(writes);
+        };
+
+        return {
+          options,
+          fs,
+          serializer,
+          fileExtension,
+          mode,
+          read: options.single ? readSingle : readMulti,
+          write: options.single ? writeSingle : writeMulti,
+        } as FileStorageAdapter;
+      }
+    patchStrategy: replace
+snapshot:
+  src/adapter.ts: "import path from 'path';\r\nimport type { DatabaseState, TableState } from './types';\r\nimport { createEmptyState } from './operations';\r\nimport type { ColumnDefinition, KonroSchema } from './schema';\r\nimport { type Serializer, getSerializer } from './utils/serializer.util';\r\nimport { FsProvider, defaultFsProvider, writeAtomic } from './fs';\r\nimport { KonroError, KonroStorageError } from './utils/error.util';\r\n\r\nexport interface StorageAdapter {\r\n  read<S extends KonroSchema<any, any>>(schema: S): Promise<DatabaseState<S>>;\r\n  write(state: DatabaseState<any>): Promise<void>;\r\n  readonly mode: 'in-memory' | 'on-demand';\n}\n\nexport interface FileStorageAdapter extends StorageAdapter {\n  readonly options: FileAdapterOptions;\n  readonly fs: FsProvider;\n  readonly serializer: Serializer;\n  readonly fileExtension: string;\n}\r\n\r\ntype SingleFileStrategy = { single: { filepath: string }; multi?: never };\r\ntype MultiFileStrategy = { multi: { dir: string }; single?: never };\r\n\r\nexport type FileAdapterOptions = {\r\n  format: 'json' | 'yaml' | 'csv' | 'xlsx';\r\n  fs?: FsProvider;\n  /**\n   * Defines the data access strategy.\n   * - `in-memory`: (Default) Loads the entire database into memory on read. Fast for small/medium datasets.\n   * - `on-demand`: Reads from the file system for each query. Slower but supports larger datasets. Requires the 'multi-file' strategy.\n   */\n  mode?: 'in-memory' | 'on-demand';\n} & (SingleFileStrategy | MultiFileStrategy);\r\n\r\nexport function createFileAdapter(options: FileAdapterOptions & { mode: 'on-demand' }): FileStorageAdapter & { mode: 'on-demand' };\nexport function createFileAdapter(options: FileAdapterOptions & { mode?: 'in-memory' | undefined }): FileStorageAdapter & { mode: 'in-memory' };\nexport function createFileAdapter(options: FileAdapterOptions): FileStorageAdapter;\nexport function createFileAdapter(options: FileAdapterOptions): FileStorageAdapter {\r\n  const serializer = getSerializer(options.format);\r\n  const fileExtension = `.${options.format}`;\r\n  const fs = options.fs ?? defaultFsProvider;\n  const mode = options.mode ?? 'in-memory';\n\n  // CSV and XLSX are structured as single tables, so they only make sense with on-demand, multi-file storage.\n  const isTabular = options.format === 'csv' || options.format === 'xlsx';\n  if (isTabular && (mode !== 'on-demand' || !options.multi)) throw KonroError(`The '${options.format}' format only supports 'on-demand' mode with a 'multi-file' strategy.`);\n\n  // The 'on-demand' mode is fundamentally incompatible with a single-file approach\n  if (mode === 'on-demand' && options.single) throw KonroError(\"The 'on-demand' mode requires the 'multi-file' storage strategy.\");\n\r\n  const parseFile = async <T>(filepath: string, schema?: Record<string, ColumnDefinition<any>>): Promise<T | undefined> => {\n    const data = await fs.readFile(filepath);\r\n    if (!data) return undefined;\r\n    try {\r\n      return serializer.parse<T>(data, schema);\r\n    } catch (e: any) {\r\n      throw KonroStorageError(`Failed to parse file at \"${filepath}\". It may be corrupt or not a valid ${options.format} file. Original error: ${e.message}`);\r\n    }\r\n  };\r\n\r\n  const read: StorageAdapter['read'] = options.single\n    ? async <S extends KonroSchema<any, any>>(schema: S) => {\r    \n    const state = await parseFile<DatabaseState<S>>(options.single!.filepath);\r\n        return state ?? createEmptyState(schema);\r\n  ;\r   }\n    : async <S extends KonroSchema<any, any>>(schema: S) => {\r    \n    const dir = options.multi!.dir;\r\n        await fs.mkdir(dir, { recursive: true });\r\n\r        const state = createEmptyState(schema);\n        await Promise.all(\n          Object.keys(schema.tables).map(async (tableName) => {\n            const filepath = path.join(dir, `${tableName}${fileExtension}`);\n            const tableState = await parseFile<TableState<any>>(filepath, schema.tables[tableName]);\n            if (tableState) (state as any)[tableName] = tableState;\n          })\n        );\n      \r  return state;\n      };\n\n  const write: StorageAdapter['write'] = options.single\n    ? (state) => writeAtomic(options.single!.filepath, serializer.stringify(state), fs)\n \r\n =: async (state) => {    \r\n    const dir = options.multi!.dir;\r\n        await fs.mkdir(dir, { recursive: true });\r        const writes = Object.entries(state).map(([tableName, tableState]) => {\r\n          const filepath = path.join(dir, `${tableName}${fileExtension}`);\r\n          return writeAtomic(filepath, serializer.stringify(tableState), fs);\n        });\n        await Promise.all(writes);\r\n      };\r\n\r\n  Intreturn {\n    options,\n    fs,\n    serializer,\n    fileExtension,\n    mode,\n    read,\n    write,\n  } as FileStorageAdapter;\r\n}"
+approved: true

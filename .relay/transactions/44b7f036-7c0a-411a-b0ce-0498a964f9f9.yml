@@ -1,0 +1,848 @@
+uuid: 44b7f036-7c0a-411a-b0ce-0498a964f9f9
+projectId: konro
+createdAt: '2025-07-09T02:17:03.109Z'
+linesAdded: 105
+linesRemoved: 155
+gitCommitMsg: 'refactor(core): radically DRY serializer and adapter logic'
+promptSummary: >-
+  Refactor the codebase to be radically DRY, aiming for a significant reduction
+  in redundant code without regressions.
+reasoning:
+  - >-
+    I've analyzed the codebase for opportunities to reduce redundancy and
+    improve clarity, focusing on the areas with the most significant
+    duplication. Here is a breakdown of the changes.
+  - '### Step 1: Refactor `serializer.util.ts` for DRY-ness'
+  - >-
+    I've refactored `src/utils/serializer.util.ts` to eliminate repetitive code
+    blocks.
+  - >-
+    1.  **Lazy Loading:** A new `loadOptional` helper function now handles the
+    `try-catch` logic for dynamically importing optional dependencies
+    (`js-yaml`, `papaparse`, `xlsx`), removing three redundant blocks.
+  - >-
+    2.  **ID Derivation:** The logic for calculating `lastId` from records in
+    CSV and XLSX files was identical. I've extracted it into a single
+    `deriveLastIdFromRecords` function, which is now called by both parsers.
+    This removes duplicated logic and improves maintainability.
+  - >-
+    3.  **Clarity:** The `if/else if` chain in `getSerializer` has been
+    converted to a more readable and efficient `switch` statement.
+  - >-
+    These changes make the serializer utility more concise and easier to
+    understand.
+  - '### Step 2: Radically Refactor `adapter.ts` for Conciseness and Correctness'
+  - >-
+    I've performed a major refactoring of the `createFileAdapter` function in
+    `src/adapter.ts`.
+  - >-
+    1.  **Centralized Parsing Logic:** A `parseFile` helper function now
+    centralizes file reading, parsing, and error handling. This removes
+    duplicated `try-catch` blocks from the `read` logic for both single and
+    multi-file strategies.
+  - >-
+    2.  **Bug Fix:** The new `parseFile` function correctly passes the
+    `tableSchema` to the serializer when parsing multi-file tabular formats
+    (CSV/XLSX). This fixes a bug where `lastId` was not being derived correctly
+    in these scenarios.
+  - >-
+    3.  **Conditional Implementation:** The `read` and `write` methods of the
+    adapter are now defined using concise ternary operators. This eliminates the
+    separate `readSingle`/`readMulti` and `writeSingle`/`writeMulti` functions,
+    significantly reducing code size and complexity.
+  - >-
+    4.  **Performance Improvement:** The multi-file read operation now uses
+    `Promise.all` to read table files in parallel, which can improve performance
+    for databases with many tables.
+  - >-
+    This refactoring makes the file adapter implementation much shorter, more
+    elegant, and more correct.
+operations:
+  - type: write
+    path: src/utils/serializer.util.ts
+    content: >-
+      --- src/utils/serializer.util.ts
+
+      +++ src/utils/serializer.util.ts
+
+      @@ -1,70 +1,70 @@
+       import { KonroStorageError } from './error.util';
+       import type { ColumnDefinition } from '../schema';
+       
+      -let yaml: { load: (str: string) => unknown; dump: (obj: any, options?:
+      any) => string; } | undefined;
+
+      -try {
+
+      -  // Lazily attempt to load optional dependency
+
+      -  yaml = require('js-yaml');
+
+      -} catch {
+
+      -  // js-yaml is not installed.
+
+      -}
+
+      -
+
+      -let papaparse: { parse: (str: string, config?: any) => { data: any[] };
+      unparse: (data: any[] | object) => string; } | undefined;
+
+      -try {
+
+      -  papaparse = require('papaparse');
+
+      -} catch {
+
+      -  // papaparse is not installed
+
+      -}
+
+      -
+
+      -let xlsx: { read: (data: any, opts: any) => any; utils: { sheet_to_json:
+      <T>(ws: any) => T[]; json_to_sheet: (json: any) => any; book_new: () =>
+      any; book_append_sheet: (wb: any, ws: any, name: string) => void; };
+      write: (wb: any, opts: any) => any; } | undefined;
+
+      -try {
+
+      -  xlsx = require('xlsx');
+
+      -} catch {
+
+      -  // xlsx is not installed
+
+      -}
+
+      +const loadOptional = <T>(name: string): T | undefined => {
+
+      +  try {
+
+      +    return require(name);
+
+      +  } catch {
+
+      +    return undefined;
+
+      +  }
+
+      +};
+
+      +
+
+      +const yaml = loadOptional<{ load: (str: string) => unknown; dump: (obj:
+      any, options?: any) => string }>('js-yaml');
+
+      +const papaparse = loadOptional<{ parse: (str: string, config?: any) => {
+      data: any[] }; unparse: (data: any[] | object) => string; }>('papaparse');
+
+      +const xlsx = loadOptional<{ read: (data: any, opts: any) => any; utils: {
+      sheet_to_json: <T>(ws: any) => T[]; json_to_sheet: (json: any) => any;
+      book_new: () => any; book_append_sheet: (wb: any, ws: any, name: string)
+      => void; }; write: (wb: any, opts: any) => any; }>('xlsx');
+       
+       export type Serializer = {
+         parse: <T>(data: string, tableSchema?: Record<string, ColumnDefinition<any>>) => T;
+         stringify: (obj: any) => string;
+       };
+       
+      -export const getSerializer = (format: 'json' | 'yaml' | 'csv' | 'xlsx'):
+      Serializer => {
+
+      -  if (format === 'json') {
+
+      -    return {
+
+      -      parse: <T>(data: string): T => JSON.parse(data),
+
+      -      stringify: (obj: any): string => JSON.stringify(obj, null, 2),
+
+      -    };
+
+      -  }
+
+      +/** For tabular formats (CSV/XLSX), metadata isn't stored. We derive
+      lastId from the data itself. */
+
+      +const deriveLastIdFromRecords = (records: any[], tableSchema:
+      Record<string, ColumnDefinition<any>>): number => {
+
+      +  const idColumn = Object.keys(tableSchema).find((key) =>
+      tableSchema[key]?.dataType === 'id' &&
+      tableSchema[key]?.options?._pk_strategy !== 'uuid');
+
+      +  if (!idColumn) return 0;
+       
+      -  if (format === 'yaml') {
+
+      -    if (!yaml) {
+
+      -      throw KonroStorageError("The 'yaml' format requires 'js-yaml' to be
+      installed. Please run 'npm install js-yaml'.");
+
+      -    }
+
+      -
+
+      -    return {
+
+      -      // The cast from `unknown` is necessary as `yaml.load` is correctly
+      typed to return `unknown`.
+
+      -      parse: <T>(data: string): T => yaml.load(data) as T,
+
+      -      stringify: (obj: any): string => yaml.dump(obj),
+
+      -    };
+
+      -  }
+
+      -
+
+      -  if (format === 'csv') {
+
+      -    if (!papaparse) {
+
+      -      throw KonroStorageError("The 'csv' format requires 'papaparse' to
+      be installed. Please run 'npm install papaparse'.");
+
+      -    }
+
+      -    return {
+
+      -      parse: <T>(data: string, tableSchema?: Record<string,
+      ColumnDefinition<any>>): T => {
+
+      -        const { data: records } = papaparse!.parse(data, { header: true,
+      dynamicTyping: true, skipEmptyLines: true });
+
+      -        // For CSV/XLSX, metadata isn't stored. We derive lastId from the
+      data itself.
+
+      -        let lastId = 0;
+
+      -        if (tableSchema) {
+
+      -          const idColumn = Object.keys(tableSchema).find(
+
+      -            (key) => tableSchema[key]?.dataType === 'id' &&
+      tableSchema[key]?.options?._pk_strategy !== 'uuid'
+
+      -          );
+
+      -          if (idColumn) {
+
+      -            lastId = (records as any[]).reduce((maxId, record) => {
+
+      -              const id = record[idColumn];
+
+      -              return typeof id === 'number' && id > maxId ? id : maxId;
+
+      -            }, 0);
+
+      -          }
+
+      -        }
+
+      -        return { records, meta: { lastId } } as T;
+
+      -      },
+
+      -      stringify: (obj: any): string => papaparse!.unparse(obj.records ||
+      []),
+
+      -    };
+
+      -  }
+
+      -
+
+      -  if (format === 'xlsx') {
+
+      -    if (!xlsx) {
+
+      -      throw KonroStorageError("The 'xlsx' format requires 'xlsx' to be
+      installed. Please run 'npm install xlsx'.");
+
+      -    }
+
+      -    return {
+
+      -      parse: <T>(data: string, tableSchema?: Record<string,
+      ColumnDefinition<any>>): T => {
+
+      -        const workbook = xlsx!.read(data, { type: 'base64' });
+
+      -        const sheetName = workbook.SheetNames[0];
+
+      -        if (!sheetName) return { records: [], meta: { lastId: 0 } } as T;
+
+      -        const worksheet = workbook.Sheets[sheetName];
+
+      -        const records = xlsx!.utils.sheet_to_json(worksheet);
+
+      -        // For CSV/XLSX, metadata isn't stored. We derive lastId from the
+      data itself.
+
+      -        let lastId = 0;
+
+      -        if (tableSchema) {
+
+      -          const idColumn = Object.keys(tableSchema).find(
+
+      -            (key) => tableSchema[key]?.dataType === 'id' &&
+      tableSchema[key]?.options?._pk_strategy !== 'uuid'
+
+      -          );
+
+      -          if (idColumn) {
+
+      -            lastId = (records as any[]).reduce((maxId: number, record:
+      any) => {
+
+      -              const id = record[idColumn];
+
+      -              return typeof id === 'number' && id > maxId ? id : maxId;
+
+      -            }, 0);
+
+      -          }
+
+      -        }
+
+      -        return { records, meta: { lastId } } as T;
+
+      -      },
+
+      -      stringify: (obj: any): string => {
+
+      -        const worksheet = xlsx!.utils.json_to_sheet(obj.records || []);
+
+      -        const workbook = xlsx!.utils.book_new();
+
+      -        xlsx!.utils.book_append_sheet(workbook, worksheet, 'data');
+
+      -        return xlsx!.write(workbook, { bookType: 'xlsx', type: 'base64'
+      });
+
+      -      },
+
+      -    };
+
+      -  }
+
+      -
+
+      -  // This should be unreachable with TypeScript, but provides a
+      safeguard.
+
+      -  throw KonroStorageError(`Unsupported or invalid format specified.`);
+
+      +  return records.reduce((maxId: number, record: any) => {
+
+      +    const id = record[idColumn];
+
+      +    return typeof id === 'number' && id > maxId ? id : maxId;
+
+      +  }, 0);
+
+      +};
+
+      +
+
+      +export const getSerializer = (format: 'json' | 'yaml' | 'csv' | 'xlsx'):
+      Serializer => {
+
+      +  switch (format) {
+
+      +    case 'json':
+
+      +      return {
+
+      +        parse: <T>(data: string): T => JSON.parse(data),
+
+      +        stringify: (obj: any): string => JSON.stringify(obj, null, 2),
+
+      +      };
+
+      +    case 'yaml':
+
+      +      if (!yaml) throw KonroStorageError("The 'yaml' format requires
+      'js-yaml' to be installed. Please run 'npm install js-yaml'.");
+
+      +      return {
+
+      +        parse: <T>(data: string): T => yaml.load(data) as T,
+
+      +        stringify: (obj: any): string => yaml.dump(obj),
+
+      +      };
+
+      +    case 'csv':
+
+      +      if (!papaparse) throw KonroStorageError("The 'csv' format requires
+      'papaparse' to be installed. Please run 'npm install papaparse'.");
+
+      +      return {
+
+      +        parse: <T>(data: string, tableSchema?: Record<string,
+      ColumnDefinition<any>>): T => {
+
+      +          const { data: records } = papaparse.parse(data, { header: true,
+      dynamicTyping: true, skipEmptyLines: true });
+
+      +          const lastId = tableSchema ? deriveLastIdFromRecords(records,
+      tableSchema) : 0;
+
+      +          return { records, meta: { lastId } } as T;
+
+      +        },
+
+      +        stringify: (obj: any): string => papaparse.unparse(obj.records ||
+      []),
+
+      +      };
+
+      +    case 'xlsx':
+
+      +      if (!xlsx) throw KonroStorageError("The 'xlsx' format requires
+      'xlsx' to be installed. Please run 'npm install xlsx'.");
+
+      +      return {
+
+      +        parse: <T>(data: string, tableSchema?: Record<string,
+      ColumnDefinition<any>>): T => {
+
+      +          const workbook = xlsx.read(data, { type: 'base64' });
+
+      +          const sheetName = workbook.SheetNames[0];
+
+      +          if (!sheetName) return { records: [], meta: { lastId: 0 } } as
+      T;
+
+      +          const worksheet = workbook.Sheets[sheetName];
+
+      +          const records = xlsx.utils.sheet_to_json(worksheet);
+
+      +          const lastId = tableSchema ? deriveLastIdFromRecords(records,
+      tableSchema) : 0;
+
+      +          return { records, meta: { lastId } } as T;
+
+      +        },
+
+      +        stringify: (obj: any): string => {
+
+      +          const worksheet = xlsx.utils.json_to_sheet(obj.records || []);
+
+      +          const workbook = xlsx.utils.book_new();
+
+      +          xlsx.utils.book_append_sheet(workbook, worksheet, 'data');
+
+      +          return xlsx.write(workbook, { bookType: 'xlsx', type: 'base64'
+      });
+
+      +        },
+
+      +      };
+
+      +    default:
+
+      +      throw KonroStorageError(`Unsupported or invalid format
+      specified.`);
+
+      +  }
+       };
+    patchStrategy: new-unified
+  - type: write
+    path: src/adapter.ts
+    content: >-
+      --- src/adapter.ts
+
+      +++ src/adapter.ts
+
+      @@ -1,8 +1,8 @@
+       import path from 'path';
+      -import { DatabaseState } from './types';
+
+      +import type { DatabaseState, TableState } from './types';
+       import { createEmptyState } from './operations';
+      -import { KonroSchema } from './schema';
+
+      -import { Serializer, getSerializer } from './utils/serializer.util';
+
+      +import type { ColumnDefinition, KonroSchema } from './schema';
+
+      +import { type Serializer, getSerializer } from './utils/serializer.util';
+       import { FsProvider, defaultFsProvider, writeAtomic } from './fs';
+       import { KonroError, KonroStorageError } from './utils/error.util';
+       
+      @@ -37,70 +37,55 @@
+         const mode = options.mode ?? 'in-memory';
+       
+         // CSV and XLSX are structured as single tables, so they only make sense with on-demand, multi-file storage.
+      -  if ((options.format === 'csv' || options.format === 'xlsx') && (mode
+      !== 'on-demand' || !options.multi)) {
+
+      -    throw KonroError(`The '${options.format}' format only supports the
+      'on-demand' mode with the 'multi-file' storage strategy.`);
+
+      -  }
+
+      +  const isTabular = options.format === 'csv' || options.format ===
+      'xlsx';
+
+      +  if (isTabular && (mode !== 'on-demand' || !options.multi)) throw
+      KonroError(`The '${options.format}' format only supports 'on-demand' mode
+      with a 'multi-file' strategy.`);
+       
+         // The 'on-demand' mode is fundamentally incompatible with a single-file approach
+      -  if (mode === 'on-demand' && options.single) {
+
+      -    throw KonroError("The 'on-demand' mode requires the 'multi-file'
+      storage strategy.");
+
+      -  }
+
+      +  if (mode === 'on-demand' && options.single) throw KonroError("The
+      'on-demand' mode requires the 'multi-file' storage strategy.");
+       
+      -  const readSingle = async <S extends KonroSchema<any, any>>(schema: S):
+      Promise<DatabaseState<S>> => {
+
+      -    const filepath = options.single!.filepath;
+
+      -    const data = await fs.readFile(filepath);
+
+      -    if (!data) return createEmptyState(schema);
+
+      +  const parseFile = async <T>(filepath: string, schema?: Record<string,
+      ColumnDefinition<any>>): Promise<T | undefined> => {
+
+      +    const data = await fs.readFile(filepath);
+
+      +    if (!data) return undefined;
+           try {
+      -      return serializer.parse<DatabaseState<S>>(data);
+
+      +      return serializer.parse<T>(data, schema);
+           } catch (e: any) {
+             throw KonroStorageError(`Failed to parse file at "${filepath}". It may be corrupt or not a valid ${options.format} file. Original error: ${e.message}`);
+           }
+         };
+       
+      -  const writeSingle = async (state: DatabaseState<any>): Promise<void> =>
+      {
+
+      -    const filepath = options.single!.filepath;
+
+      -    await writeAtomic(filepath, serializer.stringify(state), fs);
+
+      -  };
+
+      -  
+
+      -  const readMulti = async <S extends KonroSchema<any, any>>(schema: S):
+      Promise<DatabaseState<S>> => {
+
+      -    const dir = options.multi!.dir;
+
+      -    const state = createEmptyState(schema);
+
+      -    await fs.mkdir(dir, { recursive: true });
+
+      +  const read: StorageAdapter['read'] = options.single
+
+      +    ? async <S extends KonroSchema<any, any>>(schema: S) => {
+
+      +        const state = await
+      parseFile<DatabaseState<S>>(options.single!.filepath);
+
+      +        return state ?? createEmptyState(schema);
+
+      +      }
+
+      +    : async <S extends KonroSchema<any, any>>(schema: S) => {
+
+      +        const dir = options.multi!.dir;
+
+      +        await fs.mkdir(dir, { recursive: true });
+
+      +        const state = createEmptyState(schema);
+
+      +        await Promise.all(
+
+      +          Object.keys(schema.tables).map(async (tableName) => {
+
+      +            const filepath = path.join(dir,
+      `${tableName}${fileExtension}`);
+
+      +            const tableState = await parseFile<TableState<any>>(filepath,
+      schema.tables[tableName]);
+
+      +            if (tableState) (state as any)[tableName] = tableState;
+
+      +          })
+
+      +        );
+
+      +        return state;
+
+      +      };
+       
+      -    for (const tableName in schema.tables) {
+
+      -      const filepath = path.join(dir, `${tableName}${fileExtension}`);
+
+      -      const data = await fs.readFile(filepath);
+
+      -      if (data) {
+
+      -        try {
+
+      -          // This is a controlled cast, safe because we are iterating
+      over the schema's tables.
+
+      -          (state as any)[tableName] = serializer.parse(data);
+
+      -        } catch (e: any) {
+
+      -          throw KonroStorageError(`Failed to parse file at "${filepath}".
+      It may be corrupt or not a valid ${options.format} file. Original error:
+      ${e.message}`);
+
+      -        }
+
+      -      }
+
+      -    }
+
+      -    return state;
+
+      -  };
+
+      -  
+
+      -  const writeMulti = async (state: DatabaseState<any>): Promise<void> =>
+      {
+
+      -    const dir = options.multi!.dir;
+
+      -    await fs.mkdir(dir, { recursive: true });
+
+      - // Ensure directory exists
+
+      +  const write: StorageAdapter['write'] = options.single
+
+      +    ? (state) => writeAtomic(options.single!.filepath,
+      serializer.stringify(state), fs)
+
+      +    : async (state) => {
+
+      +        const dir = options.multi!.dir;
+
+      +        await fs.mkdir(dir, { recursive: true });
+
+      +        const writes = Object.entries(state).map(([tableName,
+      tableState]) => {
+
+      +          const filepath = path.join(dir,
+      `${tableName}${fileExtension}`);
+
+      +          return writeAtomic(filepath, serializer.stringify(tableState),
+      fs);
+
+      +        });
+
+      +        await Promise.all(writes);
+
+      +      };
+       
+      -    const writes = Object.entries(state).map(([tableName, tableState]) =>
+      {
+
+      -      const filepath = path.join(dir, `${tableName}${fileExtension}`);
+
+      -      const content = serializer.stringify(tableState);
+
+      -      return writeAtomic(filepath, content, fs);
+
+      -    });
+
+      -
+
+      -    await Promise.all(writes);
+
+      -  };
+
+      -
+
+      -  const adapterInternals = {
+
+      +  return {
+           options,
+           fs,
+           serializer,
+           fileExtension,
+           mode,
+      -  };
+
+      -
+
+      -  if (options.single) {
+
+      -    return { ...adapterInternals, read: readSingle, write: writeSingle }
+      as FileStorageAdapter;
+
+      -  } else {
+
+      -    return { ...adapterInternals, read: readMulti, write: writeMulti } as
+      FileStorageAdapter;
+
+      -  }
+
+      -};
+
+      +    read,
+
+      +    write,
+
+      +  } as FileStorageAdapter;
+
+      +}
+    patchStrategy: new-unified
+snapshot:
+  src/adapter.ts: "import path from 'path';\r\nimport { DatabaseState } from './types';\r\nimport { createEmptyState } from './operations';\r\nimport { KonroSchema } from './schema';\r\nimport { Serializer, getSerializer } from './utils/serializer.util';\r\nimport { FsProvider, defaultFsProvider, writeAtomic } from './fs';\r\nimport { KonroError, KonroStorageError } from './utils/error.util';\r\n\r\nexport interface StorageAdapter {\r\n  read<S extends KonroSchema<any, any>>(schema: S): Promise<DatabaseState<S>>;\r\n  write(state: DatabaseState<any>): Promise<void>;\r\n  readonly mode: 'in-memory' | 'on-demand';\n}\n\nexport interface FileStorageAdapter extends StorageAdapter {\n  readonly options: FileAdapterOptions;\n  readonly fs: FsProvider;\n  readonly serializer: Serializer;\n  readonly fileExtension: string;\n}\r\n\r\ntype SingleFileStrategy = { single: { filepath: string }; multi?: never };\r\ntype MultiFileStrategy = { multi: { dir: string }; single?: never };\r\n\r\nexport type FileAdapterOptions = {\r\n  format: 'json' | 'yaml' | 'csv' | 'xlsx';\r\n  fs?: FsProvider;\n  /**\n   * Defines the data access strategy.\n   * - `in-memory`: (Default) Loads the entire database into memory on read. Fast for small/medium datasets.\n   * - `on-demand`: Reads from the file system for each query. Slower but supports larger datasets. Requires the 'multi-file' strategy.\n   */\n  mode?: 'in-memory' | 'on-demand';\n} & (SingleFileStrategy | MultiFileStrategy);\r\n\r\nexport function createFileAdapter(options: FileAdapterOptions & { mode: 'on-demand' }): FileStorageAdapter & { mode: 'on-demand' };\nexport function createFileAdapter(options: FileAdapterOptions & { mode?: 'in-memory' | undefined }): FileStorageAdapter & { mode: 'in-memory' };\nexport function createFileAdapter(options: FileAdapterOptions): FileStorageAdapter;\nexport function createFileAdapter(options: FileAdapterOptions): FileStorageAdapter {\r\n  const serializer = getSerializer(options.format);\r\n  const fileExtension = `.${options.format}`;\r\n  const fs = options.fs ?? defaultFsProvider;\n  const mode = options.mode ?? 'in-memory';\n\n  // CSV and XLSX are structured as single tables, so they only make sense with on-demand, multi-file storage.\n  if ((options.format === 'csv' || options.format === 'xlsx') && (mode !== 'on-demand' || !options.multi)) {\n    throw KonroError(`The '${options.format}' format only supports the 'on-demand' mode with the 'multi-file' storage strategy.`);\n  }\n\n  // The 'on-demand' mode is fundamentally incompatible with a single-file approach\n  if (mode === 'on-demand' && options.single) {\n    throw KonroError(\"The 'on-demand' mode requires the 'multi-file' storage strategy.\");\n  }\n\r\n  const readSingle = async <S extends KonroSchema<any, any>>(schema: S): Promise<DatabaseState<S>> => {\r\n    const filepath = options.single!.filepath;\r\n    const data = await fs.readFile(filepath);\r\n    if (!data) return createEmptyState(schema);\r\n    try {\r\n      return serializer.parse<DatabaseState<S>>(data);\r\n    } catch (e: any) {\r\n      throw KonroStorageError(`Failed to parse file at \"${filepath}\". It may be corrupt or not a valid ${options.format} file. Original error: ${e.message}`);\r\n    }\r\n  };\r\n\r\n  const writeSingle = async (state: DatabaseState<any>): Promise<void> => {\r\n    const filepath = options.single!.filepath;\r\n    await writeAtomic(filepath, serializer.stringify(state), fs);\r\n  };\r\n  \r\n  const readMulti = async <S extends KonroSchema<any, any>>(schema: S): Promise<DatabaseState<S>> => {\r\n    const dir = options.multi!.dir;\r\n    const state = createEmptyState(schema);\r\n    await fs.mkdir(dir, { recursive: true });\r\n\r\n    for (const tableName in schema.tables) {\r\n      const filepath = path.join(dir, `${tableName}${fileExtension}`);\r\n      const data = await fs.readFile(filepath);\r\n      if (data) {\r\n        try {\r\n          // This is a controlled cast, safe because we are iterating over the schema's tables.\r\n          (state as any)[tableName] = serializer.parse(data);\r\n        } catch (e: any) {\r\n          throw KonroStorageError(`Failed to parse file at \"${filepath}\". It may be corrupt or not a valid ${options.format} file. Original error: ${e.message}`);\r\n        }\r\n      }\r\n    }\r\n    return state;\r\n  };\r\n  \r\n  const writeMulti = async (state: DatabaseState<any>): Promise<void> => {\r\n    const dir = options.multi!.dir;\r\n    await fs.mkdir(dir, { recursive: true });\r // Ensure directory exists\n\n    const writes = Object.entries(state).map(([tableName, tableState]) => {\r\n      const filepath = path.join(dir, `${tableName}${fileExtension}`);\r\n      const content = serializer.stringify(tableState);\n      return writeAtomic(filepath, content, fs);\n    });\r\r\n    await Promise.all(writes);\r\n  };\r\n\r\n  const adapterInternals = {\n    options,\n    fs,\n    serializer,\n    fileExtension,\n    mode,\n  };\n\n  if (options.single) {\r\n    return { ...adapterInternals, read: readSingle, write: writeSingle } as FileStorageAdapter;\r\n  } else {\r\n    return { ...adapterInternals, read: readMulti, write: writeMulti } as FileStorageAdapter;\r\n  }\r};"
+  src/utils/serializer.util.ts: >-
+    import { KonroStorageError } from './error.util';
+
+    import type { ColumnDefinition } from '../schema';
+
+
+    let yaml: { load: (str: string) => unknown; dump: (obj: any, options?: any)
+    => string; } | undefined;
+
+    try {
+      // Lazily attempt to load optional dependency
+      yaml = require('js-yaml');
+    } catch {
+      // js-yaml is not installed.
+    }
+
+
+    let papaparse: { parse: (str: string, config?: any) => { data: any[] };
+    unparse: (data: any[] | object) => string; } | undefined;
+
+    try {
+      papaparse = require('papaparse');
+    } catch {
+      // papaparse is not installed
+    }
+
+
+    let xlsx: { read: (data: any, opts: any) => any; utils: { sheet_to_json:
+    <T>(ws: any) => T[]; json_to_sheet: (json: any) => any; book_new: () => any;
+    book_append_sheet: (wb: any, ws: any, name: string) => void; }; write: (wb:
+    any, opts: any) => any; } | undefined;
+
+    try {
+      xlsx = require('xlsx');
+    } catch {
+      // xlsx is not installed
+    }
+
+
+    export type Serializer = {
+      parse: <T>(data: string, tableSchema?: Record<string, ColumnDefinition<any>>) => T;
+      stringify: (obj: any) => string;
+    };
+
+
+    export const getSerializer = (format: 'json' | 'yaml' | 'csv' | 'xlsx'):
+    Serializer => {
+      if (format === 'json') {
+        return {
+          parse: <T>(data: string): T => JSON.parse(data),
+          stringify: (obj: any): string => JSON.stringify(obj, null, 2),
+        };
+      }
+
+      if (format === 'yaml') {
+        if (!yaml) {
+          throw KonroStorageError("The 'yaml' format requires 'js-yaml' to be installed. Please run 'npm install js-yaml'.");
+        }
+
+        return {
+          // The cast from `unknown` is necessary as `yaml.load` is correctly typed to return `unknown`.
+          parse: <T>(data: string): T => yaml.load(data) as T,
+          stringify: (obj: any): string => yaml.dump(obj),
+        };
+      }
+
+      if (format === 'csv') {
+        if (!papaparse) {
+          throw KonroStorageError("The 'csv' format requires 'papaparse' to be installed. Please run 'npm install papaparse'.");
+        }
+        return {
+          parse: <T>(data: string, tableSchema?: Record<string, ColumnDefinition<any>>): T => {
+            const { data: records } = papaparse!.parse(data, { header: true, dynamicTyping: true, skipEmptyLines: true });
+            // For CSV/XLSX, metadata isn't stored. We derive lastId from the data itself.
+            let lastId = 0;
+            if (tableSchema) {
+              const idColumn = Object.keys(tableSchema).find(
+                (key) => tableSchema[key]?.dataType === 'id' && tableSchema[key]?.options?._pk_strategy !== 'uuid'
+              );
+              if (idColumn) {
+                lastId = (records as any[]).reduce((maxId, record) => {
+                  const id = record[idColumn];
+                  return typeof id === 'number' && id > maxId ? id : maxId;
+                }, 0);
+              }
+            }
+            return { records, meta: { lastId } } as T;
+          },
+          stringify: (obj: any): string => papaparse!.unparse(obj.records || []),
+        };
+      }
+
+      if (format === 'xlsx') {
+        if (!xlsx) {
+          throw KonroStorageError("The 'xlsx' format requires 'xlsx' to be installed. Please run 'npm install xlsx'.");
+        }
+        return {
+          parse: <T>(data: string, tableSchema?: Record<string, ColumnDefinition<any>>): T => {
+            const workbook = xlsx!.read(data, { type: 'base64' });
+            const sheetName = workbook.SheetNames[0];
+            if (!sheetName) return { records: [], meta: { lastId: 0 } } as T;
+            const worksheet = workbook.Sheets[sheetName];
+            const records = xlsx!.utils.sheet_to_json(worksheet);
+            // For CSV/XLSX, metadata isn't stored. We derive lastId from the data itself.
+            let lastId = 0;
+            if (tableSchema) {
+              const idColumn = Object.keys(tableSchema).find(
+                (key) => tableSchema[key]?.dataType === 'id' && tableSchema[key]?.options?._pk_strategy !== 'uuid'
+              );
+              if (idColumn) {
+                lastId = (records as any[]).reduce((maxId: number, record: any) => {
+                  const id = record[idColumn];
+                  return typeof id === 'number' && id > maxId ? id : maxId;
+                }, 0);
+              }
+            }
+            return { records, meta: { lastId } } as T;
+          },
+          stringify: (obj: any): string => {
+            const worksheet = xlsx!.utils.json_to_sheet(obj.records || []);
+            const workbook = xlsx!.utils.book_new();
+            xlsx!.utils.book_append_sheet(workbook, worksheet, 'data');
+            return xlsx!.write(workbook, { bookType: 'xlsx', type: 'base64' });
+          },
+        };
+      }
+
+      // This should be unreachable with TypeScript, but provides a safeguard.
+      throw KonroStorageError(`Unsupported or invalid format specified.`);
+    };
+approved: true

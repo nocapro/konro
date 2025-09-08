@@ -1,0 +1,519 @@
+uuid: 442e97aa-a824-4a58-bc4a-950fefab0d1a
+projectId: konro
+createdAt: '2025-07-09T02:08:57.210Z'
+linesAdded: 129
+linesRemoved: 2
+gitCommitMsg: 'test: add cases for auto-increment and uuid generation'
+promptSummary: >-
+  The user requested to add test cases for auto-incrementing IDs with CSV/XLSX
+  formats and for UUID generation. I've updated the dev dependencies, created a
+  new test schema for UUIDs, and added a comprehensive suite of tests to the
+  on-demand adapter integration tests to cover these scenarios.
+reasoning:
+  - >-
+    Of course. I will add the requested test cases to verify auto-increment and
+    UUID generation. Here is my plan:
+  - >-
+    1.  **Update `package.json`**: I will add `js-yaml`, `papaparse`, and `xlsx`
+    to the `devDependencies`. These are required by the test suite to read and
+    parse the respective file formats to verify their contents.
+  - >-
+    2.  **Update `test/util.ts`**: I will define and export a new
+    `uuidTestSchema`. This schema will contain a `uuid_users` table with a
+    `konro.uuid()` primary key, which is needed for the UUID generation test.
+  - '3.  **Update `test/integration/Adapters/OnDemand.test.ts`**:'
+  - >-
+    *   I'll import the new testing dependencies (`papaparse`, `xlsx`) and the
+    `uuidTestSchema`.
+  - '*   I will add a new "ID Generation" test suite.'
+  - >-
+    *   This suite will include tests to confirm that auto-incrementing IDs work
+    correctly for both new and existing CSV and XLSX files.
+  - >-
+    *   It will also include a test to verify that `konro.uuid()` correctly
+    generates a UUID string as the primary key.
+  - I'll start by updating the `package.json` file.
+  - Next, I'll add the new test schema to the testing utilities.
+  - >-
+    Finally, I'll add the new test cases for ID generation to the
+    `OnDemand.test.ts` integration test file.
+operations:
+  - type: write
+    path: package.json
+    content: |-
+      <<<<<<< SEARCH
+        "devDependencies": {
+          "@types/bun": "latest",
+          "@types/js-yaml": "^4.0.9",
+          "@types/papaparse": "^5.3.14",
+          "@typescript-eslint/eslint-plugin": "^8.36.0",
+          "@typescript-eslint/parser": "^8.36.0",
+          "eslint": "^9.30.1",
+          "tsup": "^8.5.0",
+          "typescript": "^5.5.4"
+        },
+      =======
+        "devDependencies": {
+          "@types/bun": "latest",
+          "@types/js-yaml": "^4.0.9",
+          "@types/papaparse": "^5.3.14",
+          "@typescript-eslint/eslint-plugin": "^8.36.0",
+          "@typescript-eslint/parser": "^8.36.0",
+          "eslint": "^9.30.1",
+          "js-yaml": "^4.1.0",
+          "papaparse": "^5.4.1",
+          "tsup": "^8.5.0",
+          "typescript": "^5.5.4",
+          "xlsx": "^0.18.5"
+        },
+      >>>>>>> REPLACE
+    patchStrategy: multi-search-replace
+  - type: write
+    path: test/util.ts
+    content: |-
+      --- test/util.ts
+      +++ test/util.ts
+      @@ -58,6 +58,16 @@
+       
+       export type UserCreate = typeof testSchema.create.users;
+       
+      +export const uuidTestSchema = konro.createSchema({
+      +  tables: {
+      +    uuid_users: {
+      +      id: konro.uuid(),
+      +      name: konro.string(),
+      +    },
+      +  },
+      +});
+      +
+       // --- Test Utilities ---
+       
+       export const cleanup = async () => {
+    patchStrategy: new-unified
+  - type: write
+    path: test/integration/Adapters/OnDemand.test.ts
+    content: >-
+      --- test/integration/Adapters/OnDemand.test.ts
+
+      +++ test/integration/Adapters/OnDemand.test.ts
+
+      @@ -1,10 +1,12 @@
+       import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+       import { konro } from '../../../src/index';
+      -import { testSchema, TEST_DIR, cleanup, ensureTestDir } from
+      '../../util';
+
+      +import { testSchema, TEST_DIR, cleanup, ensureTestDir, uuidTestSchema }
+      from '../../util';
+       import path from 'path';
+       import { promises as fs } from 'fs';
+       import yaml from 'js-yaml';
+      +import papaparse from 'papaparse';
+
+      +import xlsx from 'xlsx';
+       import { KonroError } from '../../../src/utils/error.util';
+       import type { OnDemandDbContext } from '../../../src/db';
+       
+      @@ -190,4 +192,118 @@
+             expect(result.sumAge).toBe(50);
+           });
+         });
+      +
+
+      +  describe('ID Generation', () => {
+
+      +    it('should auto-increment IDs for new CSV files', async () => {
+
+      +      const dbDirPath = path.join(TEST_DIR, 'csv_db');
+
+      +      const adapter = konro.createFileAdapter({
+
+      +        format: 'csv',
+
+      +        mode: 'on-demand',
+
+      +        multi: { dir: dbDirPath },
+
+      +      });
+
+      +      const db = konro.createDatabase({ schema: testSchema, adapter });
+
+      +
+
+      +      const user1 = await db.insert('users', { name: 'CSV User 1', email:
+      'csv1@test.com', age: 20 });
+
+      +      expect(user1.id).toBe(1);
+
+      +
+
+      +      const user2 = await db.insert('users', { name: 'CSV User 2', email:
+      'csv2@test.com', age: 21 });
+
+      +      expect(user2.id).toBe(2);
+
+      +
+
+      +      // Verify file content
+
+      +      const userFilePath = path.join(dbDirPath, 'users.csv');
+
+      +      const fileContent = await fs.readFile(userFilePath, 'utf-8');
+
+      +      const parsed = papaparse.parse(fileContent, { header: true,
+      dynamicTyping: true, skipEmptyLines: true });
+
+      +      expect(parsed.data).toEqual(
+
+      +        expect.arrayContaining([
+
+      +          expect.objectContaining({ id: 1, name: 'CSV User 1', email:
+      'csv1@test.com', age: 20, isActive: true }),
+
+      +          expect.objectContaining({ id: 2, name: 'CSV User 2', email:
+      'csv2@test.com', age: 21, isActive: true }),
+
+      +        ])
+
+      +      );
+
+      +    });
+
+      +
+
+      +    it('should auto-increment IDs for new XLSX files', async () => {
+
+      +      const dbDirPath = path.join(TEST_DIR, 'xlsx_db');
+
+      +      const adapter = konro.createFileAdapter({
+
+      +        format: 'xlsx',
+
+      +        mode: 'on-demand',
+
+      +        multi: { dir: dbDirPath },
+
+      +      });
+
+      +      const db = konro.createDatabase({ schema: testSchema, adapter });
+
+      +
+
+      +      const user1 = await db.insert('users', { name: 'XLSX User 1',
+      email: 'xlsx1@test.com', age: 20 });
+
+      +      expect(user1.id).toBe(1);
+
+      +
+
+      +      const user2 = await db.insert('users', { name: 'XLSX User 2',
+      email: 'xlsx2@test.com', age: 21 });
+
+      +      expect(user2.id).toBe(2);
+
+      +
+
+      +      // Verify file content
+
+      +      const userFilePath = path.join(dbDirPath, 'users.xlsx');
+
+      +      const fileContent = await fs.readFile(userFilePath, 'base64');
+
+      +      const workbook = xlsx.read(fileContent, { type: 'base64' });
+
+      +      const sheetName = workbook.SheetNames[0]!;
+
+      +      const data = xlsx.utils.sheet_to_json(workbook.Sheets[sheetName]);
+
+      +
+
+      +      expect(data).toEqual(
+
+      +        expect.arrayContaining([
+
+      +          expect.objectContaining({ id: 1, name: 'XLSX User 1', email:
+      'xlsx1@test.com', age: 20, isActive: true }),
+
+      +          expect.objectContaining({ id: 2, name: 'XLSX User 2', email:
+      'xlsx2@test.com', age: 21, isActive: true }),
+
+      +        ])
+
+      +      );
+
+      +    });
+
+      +
+
+      +    it('should determine lastId from existing CSV files', async () => {
+
+      +      const dbDirPath = path.join(TEST_DIR, 'csv_db_read');
+
+      +      const userFilePath = path.join(dbDirPath, 'users.csv');
+
+      +
+
+      +      // Manually create a CSV with existing data
+
+      +      await fs.mkdir(dbDirPath, { recursive: true });
+
+      +      const initialCsv = papaparse.unparse([{ id: 5, name: 'Existing
+      User', email: 'existing@test.com', age: 50, isActive: true }]);
+
+      +      await fs.writeFile(userFilePath, initialCsv);
+
+      +
+
+      +      const adapter = konro.createFileAdapter({ format: 'csv', mode:
+      'on-demand', multi: { dir: dbDirPath } });
+
+      +      const db = konro.createDatabase({ schema: testSchema, adapter });
+
+      +
+
+      +      const newUser = await db.insert('users', { name: 'New CSV User',
+      email: 'newcsv@test.com', age: 25 });
+
+      +      expect(newUser.id).toBe(6);
+
+      +    });
+
+      +
+
+      +    it('should determine lastId from existing XLSX files', async () => {
+
+      +      const dbDirPath = path.join(TEST_DIR, 'xlsx_db_read');
+
+      +      const userFilePath = path.join(dbDirPath, 'users.xlsx');
+
+      +
+
+      +      // Manually create an XLSX with existing data
+
+      +      await fs.mkdir(dbDirPath, { recursive: true });
+
+      +      const initialData = [{ id: 10, name: 'Existing XLSX User', email:
+      'existing_xlsx@test.com', age: 60, isActive: false }];
+
+      +      const worksheet = xlsx.utils.json_to_sheet(initialData);
+
+      +      const workbook = xlsx.utils.book_new();
+
+      +      xlsx.utils.book_append_sheet(workbook, worksheet, 'data');
+
+      +      const fileContent = xlsx.write(workbook, { bookType: 'xlsx', type:
+      'base64' });
+
+      +      await fs.writeFile(userFilePath, fileContent, 'base64');
+
+      +
+
+      +      const adapter = konro.createFileAdapter({ format: 'xlsx', mode:
+      'on-demand', multi: { dir: dbDirPath } });
+
+      +      const db = konro.createDatabase({ schema: testSchema, adapter });
+
+      +
+
+      +      const newUser = await db.insert('users', { name: 'New XLSX User',
+      email: 'newxlsx@test.com', age: 35 });
+
+      +      expect(newUser.id).toBe(11);
+
+      +    });
+
+      +
+
+      +    it('should generate UUIDs for id column', async () => {
+
+      +      const dbDirPath = path.join(TEST_DIR, 'uuid_db');
+
+      +      const adapter = konro.createFileAdapter({
+
+      +        format: 'yaml',
+
+      +        mode: 'on-demand',
+
+      +        multi: { dir: dbDirPath },
+
+      +      });
+
+      +      const db = konro.createDatabase({ schema: uuidTestSchema, adapter
+      });
+
+      +
+
+      +      const user = await db.insert('uuid_users', { name: 'UUID User' });
+
+      +      expect(typeof user.id).toBe('string');
+
+      +     
+      expect(user.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+
+      +
+
+      +      const fileContent = await fs.readFile(path.join(dbDirPath,
+      'uuid_users.yaml'), 'utf-8');
+
+      +      const parsed = yaml.load(fileContent) as any;
+
+      +      expect(parsed.records[0].id).toBe(user.id);
+
+      +    });
+
+      +  });
+       });
+    patchStrategy: new-unified
+snapshot:
+  test/integration/Adapters/OnDemand.test.ts: "import { describe, it, expect, beforeEach, afterEach } from 'bun:test';\r\nimport { konro } from '../../../src/index';\r\nimport { testSchema, TEST_DIR, cleanup, ensureTestDir } from '../../util';\r\nimport path from 'path';\r\nimport { promises as fs } from 'fs';\r\nimport yaml from 'js-yaml';\r\nimport { KonroError } from '../../../src/utils/error.util';\r\nimport type { OnDemandDbContext } from '../../../src/db';\r\n\r\ndescribe('Integration > Adapters > OnDemand', () => {\r\n  const dbDirPath = path.join(TEST_DIR, 'on_demand_db');\r\n\r\n  beforeEach(ensureTestDir);\r\n  afterEach(cleanup);\r\n\r\n  describe('Initialization', () => {\r\n    it('should successfully create an on-demand db context with a multi-file adapter', () => {\r\n      const adapter = konro.createFileAdapter({\r\n        format: 'yaml',\r\n        mode: 'on-demand',\r\n        multi: { dir: dbDirPath },\r\n      });\r\n      const db = konro.createDatabase({\r\n        schema: testSchema,\r\n        adapter,\r\n      });\r\n\r\n      expect(db).toBeDefined();\r\n      expect(db.adapter.mode).toBe('on-demand');\r\n      expect(typeof db.insert).toBe('function');\r\n      expect(typeof db.query).toBe('function');\r\n    });\r\n\r\n    it('should throw an error when creating an on-demand db context with a single-file adapter', () => {\r\n      expect(() => {\r\n        konro.createFileAdapter({\r\n          format: 'json',\r\n          mode: 'on-demand',\r\n          single: { filepath: path.join(dbDirPath, 'db.json') },\r\n        });\r\n      }).toThrow(KonroError(\"The 'on-demand' mode requires the 'multi-file' storage strategy.\"));\r\n    });\r\n  });\r\n\r\n  describe('Unsupported Operations', () => {\r\n    const adapter = konro.createFileAdapter({\r\n      format: 'yaml',\r\n      mode: 'on-demand',\r\n      multi: { dir: dbDirPath },\r\n    });\r\n    const db = konro.createDatabase({\r\n      schema: testSchema,\r\n      adapter,\r\n    });\r\n    \r\n    it('should reject db.read()', async () => {\r\n      expect(db.read()).rejects.toThrow(KonroError(\"This method is not supported in 'on-demand' mode.\"));\r\n    });\r\n\r\n    it('should reject db.write()', async () => {\r\n      expect(db.write()).rejects.toThrow(KonroError(\"This method is not supported in 'on-demand' mode.\"));\r\n    });\r\n  });\r\n\r\n  describe('CRUD Operations', () => {\r\n    let db: OnDemandDbContext<typeof testSchema>;\r\n\r\n    beforeEach(() => {\r\n      const adapter = konro.createFileAdapter({\r\n        format: 'yaml',\r\n        mode: 'on-demand',\r\n        multi: { dir: dbDirPath },\r\n      });\r\n      db = konro.createDatabase({\r\n        schema: testSchema,\r\n        adapter,\r\n      });\r\n    });\r\n\r\n    it('should insert a record and write it to the correct file', async () => {\r\n      const user = await db.insert('users', {\r\n        name: 'OnDemand User',\r\n        email: 'ondemand@test.com',\r\n        age: 25,\r\n      });\r\n\r\n      expect(user.id).toBe(1);\r\n      expect(user.name).toBe('OnDemand User');\r\n\r\n      const userFilePath = path.join(dbDirPath, 'users.yaml');\r\n      const fileContent = await fs.readFile(userFilePath, 'utf-8');\r\n      const parsedContent = yaml.load(fileContent) as any;\r\n\r\n      expect(parsedContent.records.length).toBe(1);\r\n      expect(parsedContent.records[0].name).toBe('OnDemand User');\r\n      expect(parsedContent.meta.lastId).toBe(1);\r\n    });\r\n\r\n    it('should query for records', async () => {\r\n      await db.insert('users', { name: 'Query User', email: 'q@test.com', age: 30 });\r\n      \r\n      const user = await db.query().from('users').where({ name: 'Query User' }).first();\r\n      expect(user).toBeDefined();\r\n      expect(user?.name).toBe('Query User');\r\n\r\n      const allUsers = await db.query().from('users').all();\r\n      expect(allUsers.length).toBe(1);\r\n    });\r\n\r\n    it('should update a record', async () => {\r\n      const user = await db.insert('users', { name: 'Update Me', email: 'u@test.com', age: 40 });\r\n      \r\n      const updatedUsers = await db.update('users')\r\n        .set({ name: 'Updated Name' })\r\n        .where({ id: user.id });\r\n\r\n      expect(updatedUsers.length).toBe(1);\r\n      expect(updatedUsers[0]?.name).toBe('Updated Name');\r\n\r\n      const userFilePath = path.join(dbDirPath, 'users.yaml');\r\n      const fileContent = await fs.readFile(userFilePath, 'utf-8');\r\n      const parsedContent = yaml.load(fileContent) as any;\r\n      \r\n      expect(parsedContent.records[0].name).toBe('Updated Name');\r\n    });\r\n\r\n    it('should delete a record', async () => {\r\n      const user = await db.insert('users', { name: 'Delete Me', email: 'd@test.com', age: 50 });\r\n      \r\n      await db.delete('users').where({ id: user.id });\r\n\r\n      const users = await db.query().from('users').all();\r\n      expect(users.length).toBe(0);\r\n\r\n      const userFilePath = path.join(dbDirPath, 'users.yaml');\r\n      const fileContent = await fs.readFile(userFilePath, 'utf-8');\r\n      const parsedContent = yaml.load(fileContent) as any;\r\n      \r\n      expect(parsedContent.records.length).toBe(0);\r\n    });\r\n    \r\n    it('should query with relations', async () => {\r\n      const user = await db.insert('users', { name: 'Author', email: 'author@test.com', age: 35 });\r\n      await db.insert('posts', { title: 'Post by Author', content: '...', authorId: user.id });\r\n      await db.insert('posts', { title: 'Another Post', content: '...', authorId: user.id });\r\n      \r\n      const userWithPosts = await db.query().from('users').where({ id: user.id }).with({ posts: true }).first();\r\n      \r\n      expect(userWithPosts).toBeDefined();\r\n      expect(userWithPosts?.name).toBe('Author');\r\n      expect(userWithPosts?.posts).toBeInstanceOf(Array);\r\n      expect(userWithPosts?.posts?.length).toBe(2);\r\n      expect(userWithPosts?.posts?.[0]?.title).toBe('Post by Author');\r\n    });\r\n\r\n    it('should perform aggregations', async () => {\r\n      await db.insert('users', { name: 'Agg User 1', email: 'agg1@test.com', age: 20 });\r\n      await db.insert('users', { name: 'Agg User 2', email: 'agg2@test.com', age: 30 });\r\n      \r\n      const result = await db.query().from('users').aggregate({\r\n        count: konro.count(),\r\n        avgAge: konro.avg('age'),\r\n        sumAge: konro.sum('age'),\r\n      });\r\n      \r\n      expect(result.count).toBe(2);\r\n      expect(result.avgAge).toBe(25);\r\n      expect(result.sumAge).toBe(50);\r\n    });\r\n  });\r\n});"
+  test/util.ts: |
+    import { konro } from '../src/index';
+    import { promises as fs } from 'fs';
+    import path from 'path';
+
+    export const TEST_DIR = path.join(__dirname, 'test_run_data');
+
+    // --- Schema Definition ---
+
+    const tables = {
+      users: {
+        id: konro.id(),
+        name: konro.string({ min: 2 }),
+        email: konro.string({ unique: true, format: 'email' }),
+        age: konro.number({ min: 18, type: 'integer' }),
+        isActive: konro.boolean({ default: true }),
+      },
+      posts: {
+        id: konro.id(),
+        title: konro.string(),
+        content: konro.string(),
+        authorId: konro.number(),
+        publishedAt: konro.date({ default: () => new Date() }),
+      },
+      profiles: {
+        id: konro.id(),
+        bio: konro.string(),
+        userId: konro.number({ unique: true }),
+      },
+      tags: {
+        id: konro.id(),
+        name: konro.string({ unique: true }),
+      },
+      posts_tags: {
+        id: konro.id(),
+        postId: konro.number(),
+        tagId: konro.number(),
+      },
+    };
+
+    export const schemaDef = {
+      tables,
+      relations: (_tables: typeof tables) => ({
+        users: {
+          posts: konro.many('posts', { on: 'id', references: 'authorId' }),
+          profile: konro.one('profiles', { on: 'id', references: 'userId' }),
+        },
+        posts: {
+          author: konro.one('users', { on: 'authorId', references: 'id' }),
+          tags: konro.many('posts_tags', { on: 'id', references: 'postId' }),
+        },
+        profiles: {
+          user: konro.one('users', { on: 'userId', references: 'id' }),
+        },
+        posts_tags: {
+          post: konro.one('posts', { on: 'postId', references: 'id' }),
+          tag: konro.one('tags', { on: 'tagId', references: 'id' }),
+        }
+      }),
+    };
+
+    export const testSchema = konro.createSchema(schemaDef);
+
+    export type UserCreate = typeof testSchema.create.users;
+
+    // --- Test Utilities ---
+
+    export const cleanup = async () => {
+      try {
+        await fs.rm(TEST_DIR, { recursive: true, force: true });
+      } catch (error: any) {
+        if (error.code !== 'ENOENT') {
+          console.error('Error during cleanup:', error);
+        }
+      }
+    };
+
+    export const ensureTestDir = async () => {
+      await fs.mkdir(TEST_DIR, { recursive: true });
+    }
+  package.json: |
+    {
+      "name": "konro",
+      "version": "0.1.1",
+      "description": "A type-safe, functional micro-ORM for JSON/YAML files.",
+      "type": "module",
+      "main": "./dist/index.js",
+      "module": "./dist/index.mjs",
+      "types": "./dist/index.d.ts",
+      "exports": {
+        ".": {
+          "import": "./dist/index.mjs",
+          "require": "./dist/index.js"
+        }
+      },
+      "files": [
+        "dist"
+      ],
+      "repository": {
+        "type": "git",
+        "url": "git+https://github.com/relaycoder/konro.git"
+      },
+      "keywords": [
+        "orm",
+        "json",
+        "yaml",
+        "csv",
+        "xlsx",
+        "database",
+        "typescript",
+        "local-first",
+        "immutable",
+        "functional"
+      ],
+      "author": "relaycoder",
+      "license": "MIT",
+      "devDependencies": {
+        "@types/bun": "latest",
+        "@types/js-yaml": "^4.0.9",
+        "@types/papaparse": "^5.3.14",
+        "@typescript-eslint/eslint-plugin": "^8.36.0",
+        "@typescript-eslint/parser": "^8.36.0",
+        "eslint": "^9.30.1",
+        "tsup": "^8.5.0",
+        "typescript": "^5.5.4"
+      },
+      "peerDependencies": {
+        "js-yaml": "^4.1.0",
+        "papaparse": "^5.4.1",
+        "typescript": "^5.0.0",
+        "xlsx": "^0.18.5"
+      },
+      "peerDependenciesMeta": {
+        "js-yaml": {
+          "optional": true
+        },
+        "papaparse": {
+          "optional": true
+        },
+        "xlsx": {
+          "optional": true
+        }
+      },
+      "scripts": {
+        "lint": "eslint .",
+        "build": "tsup",
+        "dev": "tsup --watch",
+        "prepublishOnly": "npm run build"
+      }
+    }
+approved: true

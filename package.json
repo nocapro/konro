@@ -1,0 +1,78 @@
+{
+  "name": "konro",
+  "version": "0.1.1",
+  "description": "A type-safe, functional-inspired ORM for local JSON/YAML file-based data sources.",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "homepage": "https://github.com/nocapro/konro",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nocapro/konro.git"
+  },
+  "keywords": [
+    "orm",
+    "json",
+    "yaml",
+    "csv",
+    "xlsx",
+    "database",
+    "typescript",
+    "local-first",
+    "immutable",
+    "functional"
+  ],
+  "author": "nocapro",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/js-yaml": "^4.0.9",
+    "@types/papaparse": "^5.3.14",
+    "@typescript-eslint/eslint-plugin": "^8.36.0",
+    "@typescript-eslint/parser": "^8.36.0",
+    "eslint": "^9.30.1",
+    "js-yaml": "^4.1.0",
+    "papaparse": "^5.4.1",
+    "typescript": "^5.5.4",
+    "xlsx": "^0.18.5",
+    "tsup": "^8.5.0"
+  },
+  "peerDependencies": {
+    "js-yaml": "^4.1.0",
+    "papaparse": "^5.4.1",
+    "typescript": "^5.0.0",
+    "xlsx": "^0.18.5"
+  },
+  "peerDependenciesMeta": {
+    "js-yaml": {
+      "optional": true
+    },
+    "papaparse": {
+      "optional": true
+    },
+    "xlsx": {
+      "optional": true
+    }
+  },
+  "scripts": {
+    "lint": "eslint .",
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "bun test",
+    "test:restore-importer": "git checkout -- test/konro-test-import.ts",
+    "test:src": "npm run test:restore-importer && bun test",
+    "test:dist": "npm run build && echo \"export * from '../dist/index.js';\" > test/konro-test-import.ts && bun test && npm run test:restore-importer",
+    "prepublishOnly": "npm run build"
+  }
+}

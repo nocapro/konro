@@ -1,0 +1,503 @@
+uuid: b859265f-4608-4177-ad07-a060155b46e3
+projectId: konro
+createdAt: '2025-07-08T13:19:05.869Z'
+linesAdded: 10
+linesRemoved: 14
+gitCommitMsg: >-
+  fix(types): implement discriminated union for relations and simplify
+  create-types
+promptSummary: >-
+  Fix all TypeScript errors by correctly handling type inference for
+  relationships and insert operations. This involves using a discriminated union
+  for RelationDefinition and simplifying the OptionalCreateKeys utility type.
+reasoning:
+  - >-
+    Of course. It's safe to remove the `readonly` keyword, but it won't fix the
+    errors. The `readonly` modifier is a compile-time feature to prevent you
+    from accidentally changing the schema definition after it's created. It's
+    good practice, but not the source of these type problems.
+  - >-
+    The errors you're seeing are caused by two subtle issues in `src/schema.ts`
+    where TypeScript's type inference needs more specific guidance:
+  - >-
+    1.  **Type Widening**: When your `one()` and `many()` helpers returned a
+    `RelationDefinition` with `relationType: 'one' | 'many'`, TypeScript
+    "widened" the specific type (e.g., `'one'`) to the full union (`'one' |
+    'many'`). This made it impossible for the `Models` utility type to
+    distinguish between them, causing relational properties to be typed as
+    `never`. The fix is to use a **discriminated union**, where `one()` and
+    `many()` return distinct types.
+  - >-
+    2.  **Insert Type Inference**: The utility type for calculating which fields
+    are optional during an insert (`OptionalCreateKeys`) was a bit too complex.
+    This caused it to fail to recognize fields with a `default` value (like
+    `isActive` or `publishedAt`) as being optional, leading to the "property is
+    missing" errors in your tests.
+  - >-
+    I will apply a comprehensive fix to `src/schema.ts` that resolves both of
+    these core problems. This single file change will correct the type system
+    and fix all 12 errors.
+  - '### 1. Fix Type Inference in `src/schema.ts`'
+  - >-
+    I'll apply four targeted changes within `src/schema.ts` to implement the
+    discriminated union pattern for relations and simplify the logic for insert
+    types.
+  - '---'
+operations:
+  - type: write
+    path: src/schema.ts
+    content: >-
+      <<<<<<< SEARCH
+
+      type Models<
+        TTables extends Record<string, any>,
+        TRelations extends Record<string, any>,
+        TBaseModels extends Record<keyof TTables, any>
+      > = {
+        [TableName in keyof TTables]: TBaseModels[TableName] & (TableName extends keyof TRelations
+          ? {
+              [RelationName in keyof TRelations[TableName]]?: TRelations[TableName][RelationName] extends RelationDefinition & {
+                relationType: 'one';
+                targetTable: infer TargetTable extends keyof TTables;
+              }
+                ? Models<TTables, TRelations, TBaseModels>[TargetTable] | null
+                : TRelations[TableName][RelationName] extends RelationDefinition & {
+                    relationType: 'many';
+                    targetTable: infer TargetTable extends keyof TTables;
+                  }
+                ? Models<TTables, TRelations, TBaseModels>[TargetTable][]
+                : never;
+            }
+          : {});
+      };
+
+      =======
+
+      type Models<
+        TTables extends Record<string, any>,
+        TRelations extends Record<string, any>,
+        TBaseModels extends Record<keyof TTables, any>
+      > = {
+        [TableName in keyof TTables]: TBaseModels[TableName] &
+          (TableName extends keyof TRelations
+            ? {
+                [RelationName in keyof TRelations[TableName]]?: TRelations[TableName][RelationName] extends OneRelationDefinition
+                  ? // `targetTable` is a string literal, so we can use it to index `Models`
+                    Models<TTables, TRelations, TBaseModels>[TRelations[TableName][RelationName]['targetTable']] | null
+                  : TRelations[TableName][RelationName] extends ManyRelationDefinition
+                  ? Models<TTables, TRelations, TBaseModels>[TRelations[TableName][RelationName]['targetTable']][]
+                  : never;
+              }
+            : {});
+      };
+
+      >>>>>>> REPLACE
+
+      <<<<<<< SEARCH
+
+      /** Finds all column names in a table definition that are optional for
+      insertion (i.e., `id` or has a `default`). */
+
+      type OptionalCreateKeys<TTableDef> = {
+        [K in keyof TTableDef]: TTableDef[K] extends ColumnDefinition<any> & ({ options: { default: any } } | { dataType: 'id' }) ? K : never;
+      }[keyof TTableDef];
+
+      =======
+
+      /** Finds all column names in a table definition that are optional for
+      insertion (i.e., `id` or has a `default`). */
+
+      type OptionalCreateKeys<TTableDef> = {
+        [K in keyof TTableDef]: TTableDef[K] extends { dataType: 'id' } | { options: { default: any } } ? K : never;
+      }[keyof TTableDef];
+
+      >>>>>>> REPLACE
+
+      <<<<<<< SEARCH
+
+      /** The definition for a table relationship, created by `konro.one()` or
+      `konro.many()`. */
+
+      export interface RelationDefinition {
+        readonly _type: 'relation';
+        readonly relationType: 'one' | 'many';
+        readonly targetTable: string;
+        readonly on: string;
+        readonly references: string;
+      }
+
+      =======
+
+      /** The definition for a table relationship, created by `konro.one()` or
+      `konro.many()`. */
+
+      interface BaseRelationDefinition {
+        readonly _type: 'relation';
+        readonly targetTable: string;
+        readonly on: string;
+        readonly references: string;
+      }
+
+      interface OneRelationDefinition extends BaseRelationDefinition {
+        readonly relationType: 'one';
+      }
+
+      interface ManyRelationDefinition extends BaseRelationDefinition {
+        readonly relationType: 'many';
+      }
+
+      export type RelationDefinition = OneRelationDefinition |
+      ManyRelationDefinition;
+
+      >>>>>>> REPLACE
+
+      <<<<<<< SEARCH
+
+      /** Defines a `one-to-one` or `many-to-one` relationship. */
+
+      export const one = (targetTable: string, options: { on: string;
+      references: string }): RelationDefinition => ({
+        _type: 'relation',
+        relationType: 'one',
+        targetTable,
+        ...options,
+      });
+
+
+      /** Defines a `one-to-many` relationship. */
+
+      export const many = (targetTable: string, options: { on: string;
+      references: string }): RelationDefinition => ({
+        _type: 'relation',
+        relationType: 'many',
+        targetTable,
+        ...options,
+      });
+
+      =======
+
+      /** Defines a `one-to-one` or `many-to-one` relationship. */
+
+      export const one = (targetTable: string, options: { on: string;
+      references: string }): OneRelationDefinition => ({
+        _type: 'relation',
+        relationType: 'one',
+        targetTable,
+        ...options,
+      });
+
+
+      /** Defines a `one-to-many` relationship. */
+
+      export const many = (targetTable: string, options: { on: string;
+      references: string }): ManyRelationDefinition => ({
+        _type: 'relation',
+        relationType: 'many',
+        targetTable,
+        ...options,
+      });
+
+      >>>>>>> REPLACE
+    patchStrategy: multi-search-replace
+snapshot:
+  src/schema.ts: >-
+    //
+
+    // Konro: The Type-Safe, Functional ORM for JSON/YAML
+
+    //
+
+    // ## Pillar I: The Recipe (Schema Definition)
+
+    //
+
+    // This file contains the core logic for defining a database schema. It is
+    designed to be
+
+    // both the runtime source of truth for validation and the static source of
+    truth for
+
+    // TypeScript types. By using phantom types and inference, we can create a
+    fully-typed
+
+    // `db` object from a single schema definition object, eliminating the need
+    for manual
+
+    // type declarations (`interface User { ... }`) and ensuring they never get
+    out of sync.
+
+    //
+
+
+    // --- TYPE INFERENCE HELPERS ---
+
+
+    /** Infers the underlying TypeScript type from a `ColumnDefinition`. e.g.,
+    `ColumnDefinition<string>` => `string`. */
+
+    type InferColumnType<C> = C extends ColumnDefinition<infer T> ? T : never;
+
+
+    /** A mapping of table names to their base model types (columns only, no
+    relations). */
+
+    export type BaseModels<TTables extends Record<string, any>> = {
+      [TableName in keyof TTables]: {
+        [ColumnName in keyof TTables[TableName]]: InferColumnType<TTables[TableName][ColumnName]>;
+      };
+    };
+
+
+    /**
+     * A mapping of table names to their full model types, including relations.
+     * This is a recursive type that resolves relationships to other full models.
+     */
+    type Models<
+      TTables extends Record<string, any>,
+      TRelations extends Record<string, any>,
+      TBaseModels extends Record<keyof TTables, any>
+    > = {
+      [TableName in keyof TTables]: TBaseModels[TableName] & (TableName extends keyof TRelations
+        ? {
+            [RelationName in keyof TRelations[TableName]]?: TRelations[TableName][RelationName] extends RelationDefinition & {
+              relationType: 'one';
+              targetTable: infer TargetTable extends keyof TTables;
+            }
+              ? Models<TTables, TRelations, TBaseModels>[TargetTable] | null
+              : TRelations[TableName][RelationName] extends RelationDefinition & {
+                  relationType: 'many';
+                  targetTable: infer TargetTable extends keyof TTables;
+                }
+              ? Models<TTables, TRelations, TBaseModels>[TargetTable][]
+              : never;
+          }
+        : {});
+    };
+
+
+    /** Finds all column names in a table definition that are optional for
+    insertion (i.e., `id` or has a `default`). */
+
+    type OptionalCreateKeys<TTableDef> = {
+      [K in keyof TTableDef]: TTableDef[K] extends ({ options: { default: any } } | { dataType: 'id' }) ? K : never;
+    }[keyof TTableDef];
+
+
+    /**
+     * A mapping of table names to their "create" types, used for `db.insert`.
+     * It takes the base model, makes keys with defaults optional, and removes the `id` field.
+     */
+    type CreateModels<
+      TTables extends Record<string, any>,
+      TBaseModels extends Record<keyof TTables, any>
+    > = {
+      [TableName in keyof TTables]: Omit<
+        {
+          // Required fields
+          [K in Exclude<keyof TBaseModels[TableName], OptionalCreateKeys<TTables[TableName]>>]: TBaseModels[TableName][K];
+        } & {
+          // Optional fields
+          [K in OptionalCreateKeys<TTables[TableName]>]?: TBaseModels[TableName][K];
+        },
+        // 'id' is always omitted from create types
+        'id'
+      >;
+    };
+
+
+
+    // --- PUBLIC API TYPES ---
+
+
+    /** The publicly exposed structure of a fully-processed Konro schema. */
+
+    export interface KonroSchema<
+      TTables extends Record<string, any>,
+      TRelations extends Record<string, any>
+    > {
+      tables: TTables;
+      relations: TRelations;
+      types: Models<TTables, TRelations, BaseModels<TTables>>;
+      create: CreateModels<TTables, BaseModels<TTables>>;
+    }
+
+
+    /** The definition for a database column, created by helpers like
+    `konro.string()`. */
+
+    export interface ColumnDefinition<T> {
+      readonly _type: 'column';
+      readonly dataType: 'id' | 'string' | 'number' | 'boolean' | 'date' | 'object';
+      readonly options?: any;
+      readonly _tsType: T; // Phantom type, does not exist at runtime
+    }
+
+
+    /** The definition for a table relationship, created by `konro.one()` or
+    `konro.many()`. */
+
+    interface BaseRelationDefinition {
+      readonly _type: 'relation';
+      readonly targetTable: string;
+      readonly on: string;
+      readonly references: string;
+    }
+
+
+    interface OneRelationDefinition extends BaseRelationDefinition {
+      readonly relationType: 'one';
+    }
+
+
+    interface ManyRelationDefinition extends BaseRelationDefinition {
+      readonly relationType: 'many';
+    }
+
+
+    export type RelationDefinition = OneRelationDefinition |
+    ManyRelationDefinition;
+
+
+    /** The definition for a data aggregation, created by `konro.count()`,
+    `konro.sum()`, etc. */
+
+    export interface AggregationDefinition {
+      readonly _type: 'aggregation';
+      readonly aggType: 'count' | 'sum' | 'avg' | 'min' | 'max';
+      readonly column?: string;
+    }
+
+
+
+    // --- SCHEMA BUILDER FUNCTION ---
+
+
+    /**
+     * Defines the structure, types, and relations of your database.
+     * This is the single source of truth for both runtime validation and static types.
+     *
+     * @param schemaDef The schema definition object.
+     * @returns A processed schema object with inferred types attached.
+     */
+    export const createSchema = <
+      const TDef extends {
+        tables: Record<string, Record<string, ColumnDefinition<any>>>;
+        relations?: (tables: TDef['tables']) => Record<string, Record<string, RelationDefinition>>;
+      }
+    >(
+      schemaDef: TDef
+    ): KonroSchema<TDef['tables'], TDef['relations'] extends (...args: any) =>
+    any ? ReturnType<TDef['relations']> : {}> => {
+      const relations = schemaDef.relations ? schemaDef.relations(schemaDef.tables) : {};
+      return {
+        tables: schemaDef.tables,
+        relations: relations as any, // Cast to bypass complex conditional type issue
+        // Types are applied via the return type annotation, these are just placeholders at runtime.
+        types: {} as any,
+        create: {} as any,
+      };
+    };
+
+
+
+    // --- COLUMN DEFINITION HELPERS ---
+
+
+    const createColumn = <T>(dataType: ColumnDefinition<T>['dataType'],
+    options?: object): ColumnDefinition<T> => ({
+      _type: 'column',
+      dataType,
+      options,
+      // This is a "phantom type", it holds the TypeScript type for inference but is undefined at runtime.
+      _tsType: undefined as T,
+    });
+
+
+    /** A managed, auto-incrementing integer primary key. */
+
+    export const id = () => createColumn<number>('id');
+
+    /** A string column with optional validation. */
+
+    export const string = (options?: { unique?: boolean; default?: string | (()
+    => string); min?: number; max?: number; format?: 'email' | 'uuid' | 'url' })
+    => createColumn<string>('string', options);
+
+    /** A number column with optional validation. */
+
+    export const number = (options?: { unique?: boolean; default?: number | (()
+    => number); min?: number; max?: number; type?: 'integer' }) =>
+    createColumn<number>('number', options);
+
+    /** A boolean column. */
+
+    export const boolean = (options?: { default?: boolean | (() => boolean) })
+    => createColumn<boolean>('boolean', options);
+
+    /** A date column, stored as an ISO string but hydrated as a Date object. */
+
+    export const date = (options?: { default?: Date | (() => Date) }) =>
+    createColumn<Date>('date', options);
+
+    /** A column for storing arbitrary JSON objects, with a generic for type
+    safety. */
+
+    export const object = <T extends Record<string, any>>(options?: { default?:
+    T | (() => T) }) => createColumn<T>('object', options);
+
+
+
+    // --- RELATIONSHIP DEFINITION HELPERS ---
+
+
+    /** Defines a `one-to-one` or `many-to-one` relationship. */
+
+    export const one = (targetTable: string, options: { on: string; references:
+    string }): OneRelationDefinition => ({
+      _type: 'relation',
+      relationType: 'one',
+      targetTable,
+      ...options,
+    });
+
+
+    /** Defines a `one-to-many` relationship. */
+
+    export const many = (targetTable: string, options: { on: string; references:
+    string }): ManyRelationDefinition => ({
+      _type: 'relation',
+      relationType: 'many',
+      targetTable,
+      ...options,
+    });
+
+
+
+    // --- AGGREGATION DEFINITION HELPERS ---
+
+
+    /** Aggregation to count records. */
+
+    export const count = (): AggregationDefinition => ({ _type: 'aggregation',
+    aggType: 'count' });
+
+    /** Aggregation to sum a numeric column. */
+
+    export const sum = (column: string): AggregationDefinition => ({ _type:
+    'aggregation', aggType: 'sum', column });
+
+    /** Aggregation to average a numeric column. */
+
+    export const avg = (column: string): AggregationDefinition => ({ _type:
+    'aggregation', aggType: 'avg', column });
+
+    /** Aggregation to find the minimum value in a numeric column. */
+
+    export const min = (column: string): AggregationDefinition => ({ _type:
+    'aggregation', aggType: 'min', column });
+
+    /** Aggregation to find the maximum value in a numeric column. */
+
+    export const max = (column: string): AggregationDefinition => ({ _type:
+    'aggregation', aggType: 'max', column });
+approved: true

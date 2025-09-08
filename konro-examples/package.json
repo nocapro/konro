@@ -1,0 +1,20 @@
+{
+  "name": "konro-testing",
+  "module": "index.ts",
+  "type": "module",
+  "scripts": {
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "js-yaml": "^4.1.0",
+    "konro": "^0.1.15",
+    "papaparse": "^5.4.1",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.2/xlsx-0.20.2.tgz",
+    "@types/js-yaml": "^4.0.9",
+    "@types/papaparse": "^5.3.14"
+  },
+  "peerDependencies": {
+    "typescript": "^5.0.0"
+  }
+}

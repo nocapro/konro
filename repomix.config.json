@@ -1,0 +1,71 @@
+{
+  "$schema": "https://repomix.com/schemas/latest/schema.json",
+  "input": {
+    "maxFileSize": 52428800
+  },
+  "output": {
+    "filePath": "docs/repomix.md",
+    "style": "markdown",
+    "parsableStyle": true,
+    "fileSummary": false,
+    "directoryStructure": true,
+    "files": true,
+    "removeComments": false,
+    "removeEmptyLines": false,
+    "compress": false,
+    "topFilesLength": 5,
+    "showLineNumbers": false,
+    "copyToClipboard": true,
+    "git": {
+      "sortByChanges": true,
+      "sortByChangesMaxCommits": 100,
+      "includeDiffs": false
+    }
+  },
+  "include": [
+    "package.json",
+    "tsconfig.json",
+    "tsconfig.build.json",
+    "src",
+    // "test"
+// "konro-examples/test/e2e/per-record.test.ts",
+// "konro-examples/test/test.util.ts"
+    // "src/db.ts",
+    // "src/schema.ts",
+    // "src/operations.ts"
+
+    // "test/integration/InMemoryFlow/CrudCycle.test.ts",
+    // "test/integration/Adapters/PerRecord.test.ts",
+    // "src/adapter.ts",
+    // "src/db.ts",
+    // "src/schema.ts",
+    // "src/operations.ts",
+    // "src/types.ts"
+
+    // // "test/unit"
+
+    // "src/schema.ts",
+    // // "src/operations.ts",
+    // "src/db.ts",
+    // "src/index.ts",
+    // "src/adapter.ts",
+    // "src/types.ts"
+  ],
+  "ignore": {
+    "useGitignore": true,
+    "useDefaultPatterns": true,
+    "customPatterns": [
+      // "test/unit",
+      //    "src/index.ts",
+      // "src/types.ts",
+      // "src/utils"
+      // "src/utils"
+    ]
+  },
+  "security": {
+    "enableSecurityCheck": true
+  },
+  "tokenCount": {
+    "encoding": "o200k_base"
+  }
+}

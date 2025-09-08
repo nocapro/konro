@@ -1,0 +1,682 @@
+uuid: 4d28d0b2-4d7a-40a8-b611-d7031ef09c73
+projectId: konro
+createdAt: '2025-07-07T06:15:46.949Z'
+gitCommitMsg: 'fix: Resolve multiple TypeScript compilation errors'
+promptSummary: >-
+  Fix TypeScript errors in the codebase based on the provided compiler output
+  and project rules.
+reasoning:
+  - >-
+    Here are the fixes for the TypeScript errors. I've analyzed each error and
+    applied the most appropriate correction according to the project's standards
+    and the instructions.
+  - '### Step-by-step Reasoning'
+  - 1.  **`src/operations.ts`:**
+  - >-
+    -   In `_updateImpl`, the expression `schema.tables[tableName] ?? {}` was
+    causing `Object.entries` to return an array with `unknown` values, leading
+    to a type error on `colDef`. I've added an explicit check for
+    `tableSchema`'s existence at the beginning of the function. This ensures
+    `Object.entries(tableSchema)` is type-safe and resolves the error.
+  - >-
+    -   For consistency and robustness, I've also added the same `tableSchema`
+    check to `_insertImpl`.
+  - 2.  **`src/schema.ts`:**
+  - >-
+    -   The `boolean()` and `object()` helper functions had type errors related
+    to `options` and `_tsType`. TypeScript's inference was struggling with the
+    complex conditional types in `ColumnDefinition`. By introducing a typed
+    intermediate variable (`const def: ColumnDefinition<T> = ...`), I explicitly
+    guide the compiler, resolving the assignability errors for both helpers.
+  - >-
+    -   The `createSchema()` function signature had an overly restrictive
+    constraint (`extends SchemaInputDef<Record<string, ...>>`) that caused a
+    parameter contravariance error when used with a specific schema definition
+    in tests. I've relaxed this constraint to `extends SchemaInputDef<any>`,
+    which is safe because the `const TDef` generic infers the most specific type
+    from the argument, maintaining type safety between the `tables` and
+    `relations` properties.
+  - 3.  **`test/unit/Schema/ColumnHelpers.test.ts`:**
+  - >-
+    -   The test for `konro.object()` was failing because it tried to assert the
+    value of `_tsType`, a compile-time-only property whose runtime value is
+    `undefined`. This `undefined` value is not assignable to the statically
+    inferred type (e.g., `{ meta: string }`), causing a type error in the test
+    code itself. I've changed the assertion to use `toMatchObject()` to verify
+    the relevant runtime properties of the column definition, correctly ignoring
+    the `_tsType` property. This is a standard and appropriate way to test
+    partial object structures.
+  - These changes collectively resolve all 5 TypeScript errors.
+operations:
+  - type: write
+    path: src/operations.ts
+    content: >-
+      <<<<<<< SEARCH
+
+      export const _insertImpl = <S extends KonroSchema<any, any>>(state:
+      DatabaseState, schema: S, tableName: string, values: KRecord[]):
+      [DatabaseState, KRecord[]] => {
+        const newState = structuredClone(state);
+        const tableState = newState[tableName];
+        if (!tableState) throw KonroError(`Table "${tableName}" does not exist in the database state.`);
+        const tableSchema = schema.tables[tableName];
+        const insertedRecords: KRecord[] = [];
+      =======
+
+      export const _insertImpl = <S extends KonroSchema<any, any>>(state:
+      DatabaseState, schema: S, tableName: string, values: KRecord[]):
+      [DatabaseState, KRecord[]] => {
+        const newState = structuredClone(state);
+        const tableState = newState[tableName];
+        if (!tableState) throw KonroError(`Table "${tableName}" does not exist in the database state.`);
+        const tableSchema = schema.tables[tableName];
+        if (!tableSchema) throw KonroError(`Schema for table "${tableName}" not found.`);
+        const insertedRecords: KRecord[] = [];
+      >>>>>>> REPLACE
+
+      <<<<<<< SEARCH
+
+      export const _updateImpl = <S extends KonroSchema<any, any>>(state:
+      DatabaseState, schema: S, tableName: string, data: Partial<KRecord>,
+      predicate: (record: KRecord) => boolean): [DatabaseState, KRecord[]] => {
+        const newState = structuredClone(state);
+        const tableState = newState[tableName];
+        if (!tableState) throw KonroError(`Table "${tableName}" does not exist in the database state.`);
+        const updatedRecords: KRecord[] = [];
+
+        const updateData = { ...data };
+        // Find the ID column from the schema and prevent it from being updated.
+        const idColumn = Object.entries(schema.tables[tableName] ?? {}).find(([, colDef]) => colDef.dataType === 'id')?.[0]
+        if (idColumn && updateData[idColumn] !== undefined) {
+          delete updateData[idColumn];
+        }
+
+
+        tableState.records = tableState.records.map(record => {
+          if (predicate(record)) {
+            const updatedRecord = { ...record, ...updateData };
+            updatedRecords.push(updatedRecord);
+            return updatedRecord;
+          }
+          return record;
+        });
+
+        return [newState, updatedRecords];
+      };
+
+      =======
+
+      export const _updateImpl = <S extends KonroSchema<any, any>>(state:
+      DatabaseState, schema: S, tableName: string, data: Partial<KRecord>,
+      predicate: (record: KRecord) => boolean): [DatabaseState, KRecord[]] => {
+        const newState = structuredClone(state);
+        const tableState = newState[tableName];
+        if (!tableState) throw KonroError(`Table "${tableName}" does not exist in the database state.`);
+        
+        const tableSchema = schema.tables[tableName];
+        if (!tableSchema) {
+          throw KonroError(`Schema for table "${tableName}" not found.`);
+        }
+        
+        const updatedRecords: KRecord[] = [];
+
+        const updateData = { ...data };
+        // Find the ID column from the schema and prevent it from being updated.
+        const idColumn = Object.entries(tableSchema).find(([, colDef]) => colDef.dataType === 'id')?.[0];
+        if (idColumn && updateData[idColumn] !== undefined) {
+          delete updateData[idColumn];
+        }
+
+        tableState.records = tableState.records.map(record => {
+          if (predicate(record)) {
+            const updatedRecord = { ...record, ...updateData };
+            updatedRecords.push(updatedRecord);
+            return updatedRecord;
+          }
+          return record;
+        });
+
+        return [newState, updatedRecords];
+      };
+
+      >>>>>>> REPLACE
+    patchStrategy: multi-search-replace
+  - type: write
+    path: src/schema.ts
+    content: >-
+      <<<<<<< SEARCH
+
+      export const boolean = (options?: ColumnOptions<boolean>):
+      ColumnDefinition<boolean> => ({ _type: 'column', dataType: 'boolean',
+      options, _tsType: false });
+
+      export const date = (options?: ColumnOptions<Date>):
+      ColumnDefinition<Date> => ({ _type: 'column', dataType: 'date', options,
+      _tsType: new Date() });
+
+      export const object = <T extends Record<string, any>>(options?:
+      ColumnOptions<T>): ColumnDefinition<T> => ({ _type: 'column', dataType:
+      'object', options, _tsType: undefined! });
+
+      =======
+
+      export const boolean = (options?: ColumnOptions<boolean>):
+      ColumnDefinition<boolean> => {
+        const def: ColumnDefinition<boolean> = { _type: 'column', dataType: 'boolean', options, _tsType: false };
+        return def;
+      };
+
+      export const date = (options?: ColumnOptions<Date>):
+      ColumnDefinition<Date> => ({ _type: 'column', dataType: 'date', options,
+      _tsType: new Date() });
+
+      export const object = <T extends Record<string, any>>(options?:
+      ColumnOptions<T>): ColumnDefinition<T> => {
+        const def: ColumnDefinition<T> = { _type: 'column', dataType: 'object', options, _tsType: undefined! };
+        return def;
+      };
+
+      >>>>>>> REPLACE
+
+      <<<<<<< SEARCH
+
+      type SchemaInputDef<T> = {
+        tables: T;
+        relations?: (tables: T) => Record<string, Record<string, RelationDefinition>>;
+      };
+
+
+      export function createSchema<const TDef extends
+      SchemaInputDef<Record<string, Record<string,
+      ColumnDefinition<any>>>>>(definition: TDef) {
+        const relations = definition.relations ? definition.relations(definition.tables) : {};
+        return {
+          tables: definition.tables,
+          relations,
+          types: null as any, // This is a runtime placeholder for the inferred types
+        } as KonroSchema<
+          TDef['tables'],
+          TDef['relations'] extends (...args: any) => any ? ReturnType<TDef['relations']> : {}
+        >;
+      }
+
+      =======
+
+      type SchemaInputDef<T> = {
+        tables: T;
+        relations?: (tables: T) => Record<string, Record<string, RelationDefinition>>;
+      };
+
+
+      export function createSchema<const TDef extends
+      SchemaInputDef<any>>(definition: TDef) {
+        const relations = definition.relations ? definition.relations(definition.tables) : {};
+        return {
+          tables: definition.tables,
+          relations,
+          types: null as any, // This is a runtime placeholder for the inferred types
+        } as KonroSchema<
+          TDef['tables'],
+          TDef['relations'] extends (...args: any) => any ? ReturnType<TDef['relations']> : {}
+        >;
+      }
+
+      >>>>>>> REPLACE
+    patchStrategy: multi-search-replace
+  - type: write
+    path: test/unit/Schema/ColumnHelpers.test.ts
+    content: |-
+      <<<<<<< SEARCH
+        it('should create a valid object column definition', () => {
+          const objCol = konro.object<{ meta: string }>();
+          expect(objCol).toEqual({
+            _type: 'column',
+            dataType: 'object',
+            options: undefined,
+            _tsType: undefined,
+          });
+        });
+      =======
+        it('should create a valid object column definition', () => {
+          const objCol = konro.object<{ meta: string }>();
+          expect(objCol).toMatchObject({
+            _type: 'column',
+            dataType: 'object',
+            options: undefined,
+          });
+        });
+      >>>>>>> REPLACE
+    patchStrategy: multi-search-replace
+snapshot:
+  src/operations.ts: >
+    import { DatabaseState, KRecord } from './types';
+
+    import { KonroSchema, RelationDefinition } from './schema';
+
+    import { KonroError } from './utils/error.util';
+
+
+    // --- HELPERS ---
+
+
+
+    /** Creates a pristine, empty database state from a schema. */
+
+    export const createEmptyState = (schema: KonroSchema<any, any>):
+    DatabaseState => {
+      const state: DatabaseState = {};
+      for (const tableName in schema.tables) {
+        state[tableName] = { records: [], meta: { lastId: 0 } };
+      }
+      return state;
+    };
+
+
+    // --- QUERY ---
+
+
+    export interface QueryDescriptor {
+      tableName: string;
+      select?: (keyof KRecord)[];
+      where?: (record: KRecord) => boolean;
+      with?: Record<string, boolean | { where?: (record: KRecord) => boolean }>;
+      limit?: number;
+      offset?: number;
+    }
+
+
+    export const _queryImpl = <S extends KonroSchema<any, any>>(state:
+    DatabaseState, schema: S, descriptor: QueryDescriptor): KRecord[] => {
+      const tableState = state[descriptor.tableName];
+      if (!tableState) return [];
+
+      // 1. Filter
+      let results = descriptor.where ? tableState.records.filter(descriptor.where) : [...tableState.records];
+
+      // 2. Eager load relations (`with`)
+      if (descriptor.with) {
+        results = structuredClone(results); // Clone to avoid mutating state
+        for (const record of results) {
+          for (const relationName in descriptor.with) {
+            const relationDef = schema.relations[descriptor.tableName]?.[relationName];
+            if (!relationDef) continue;
+
+            const relatedRecords = findRelatedRecords(state, record, relationDef);
+
+            const withOpts = descriptor.with[relationName];
+            const nestedWhere = typeof withOpts === 'object' ? withOpts.where : undefined;
+
+            const filteredRelatedRecords = nestedWhere ? relatedRecords.filter(nestedWhere) : relatedRecords;
+            if (relationDef.relationType === 'one') {
+              record[relationName] = filteredRelatedRecords[0] ?? null;
+            } else {
+              record[relationName] = filteredRelatedRecords;
+            }
+          }
+        }
+      }
+
+      // 3. Paginate
+      const offset = descriptor.offset ?? 0;
+      const limit = descriptor.limit ?? results.length;
+      let paginatedResults = results.slice(offset, offset + limit);
+
+      // 4. Select Fields
+      if (descriptor.select) {
+        paginatedResults = paginatedResults.map(rec => {
+          const newRec: KRecord = {};
+          for (const key of descriptor.select!) {
+            // This includes keys from `with` if the user explicitly adds them to select.
+            if (rec.hasOwnProperty(key)) {
+              newRec[key] = rec[key];
+            }
+          }
+          return newRec;
+        });
+      }
+
+      return paginatedResults;
+    };
+
+
+    const findRelatedRecords = (state: DatabaseState, record: KRecord,
+    relationDef: RelationDefinition) => {
+      const foreignKey = record[relationDef.on];
+      const targetTable = state[relationDef.targetTable];
+
+      if (foreignKey === undefined || !targetTable) return [];
+
+      // one-to-many: 'on' is PK on current table, 'references' is FK on target
+      if (relationDef.relationType === 'many') {
+        return targetTable.records.filter(r => r[relationDef.references] === foreignKey);
+      }
+
+      // many-to-one: 'on' is FK on current table, 'references' is PK on target
+      if (relationDef.relationType === 'one') {
+        return targetTable.records.filter(r => r[relationDef.references] === foreignKey);
+      }
+
+      return [];
+    };
+
+
+
+    // --- INSERT ---
+
+
+    export const _insertImpl = <S extends KonroSchema<any, any>>(state:
+    DatabaseState, schema: S, tableName: string, values: KRecord[]):
+    [DatabaseState, KRecord[]] => {
+      const newState = structuredClone(state);
+      const tableState = newState[tableName];
+      if (!tableState) throw KonroError(`Table "${tableName}" does not exist in the database state.`);
+      const tableSchema = schema.tables[tableName];
+      const insertedRecords: KRecord[] = [];
+
+      for (const value of values) {
+        const newRecord: KRecord = { ...value };
+        // Handle IDs and defaults
+        for (const colName in tableSchema) {
+          const colDef = tableSchema[colName];
+          if (colDef.dataType === 'id') {
+            tableState.meta.lastId++;
+            newRecord[colName] = tableState.meta.lastId;
+          }
+          if (newRecord[colName] === undefined && colDef.options?.default !== undefined) {
+            newRecord[colName] = typeof colDef.options.default === 'function' ? colDef.options.default() : colDef.options.default;
+          }
+        }
+        tableState.records.push(newRecord);
+        insertedRecords.push(newRecord);
+      }
+
+      return [newState, insertedRecords];
+    };
+
+
+    // --- UPDATE ---
+
+
+    export const _updateImpl = <S extends KonroSchema<any, any>>(state:
+    DatabaseState, schema: S, tableName: string, data: Partial<KRecord>,
+    predicate: (record: KRecord) => boolean): [DatabaseState, KRecord[]] => {
+      const newState = structuredClone(state);
+      const tableState = newState[tableName];
+      if (!tableState) throw KonroError(`Table "${tableName}" does not exist in the database state.`);
+      const updatedRecords: KRecord[] = [];
+
+      const updateData = { ...data };
+      // Find the ID column from the schema and prevent it from being updated.
+      const idColumn = Object.entries(schema.tables[tableName] ?? {}).find(([, colDef]) => colDef.dataType === 'id')?.[0]
+      if (idColumn && updateData[idColumn] !== undefined) {
+        delete updateData[idColumn];
+      }
+
+
+      tableState.records = tableState.records.map(record => {
+        if (predicate(record)) {
+          const updatedRecord = { ...record, ...updateData };
+          updatedRecords.push(updatedRecord);
+          return updatedRecord;
+        }
+        return record;
+      });
+
+      return [newState, updatedRecords];
+    };
+
+
+
+    // --- DELETE ---
+
+
+    export const _deleteImpl = (state: DatabaseState, tableName: string,
+    predicate: (record: KRecord) => boolean): [DatabaseState, KRecord[]] => {
+      const newState = structuredClone(state);
+      const tableState = newState[tableName];
+      if (!tableState) throw KonroError(`Table "${tableName}" does not exist in the database state.`);
+      const deletedRecords: KRecord[] = [];
+
+      const keptRecords = tableState.records.filter(record => {
+        if (predicate(record)) {
+          deletedRecords.push(record);
+          return false;
+        }
+        return true;
+      });
+
+      tableState.records = keptRecords;
+      return [newState, deletedRecords];
+    };
+  src/schema.ts: >
+    // --- TYPE UTILITIES ---
+
+    type Pretty<T> = { [K in keyof T]: T[K] } & {};
+
+
+    // --- CORE DEFINITIONS ---
+
+
+    export interface ColumnOptions<T> {
+      unique?: boolean;
+      default?: T | (() => T);
+    }
+
+
+    export interface StringColumnOptions extends ColumnOptions<string> {
+      min?: number;
+      max?: number;
+      format?: 'email' | 'uuid' | 'url';
+    }
+
+
+    export interface NumberColumnOptions extends ColumnOptions<number> {
+      min?: number;
+      max?: number;
+      type?: 'integer';
+    }
+
+
+    export interface ColumnDefinition<T> {
+      _type: 'column';
+      dataType: 'id' | 'string' | 'number' | 'boolean' | 'date' | 'object';
+      options?: T extends string
+        ? StringColumnOptions
+        : T extends number
+        ? NumberColumnOptions
+        : ColumnOptions<T>;
+      _tsType: T; // For TypeScript inference only
+    }
+
+
+    export interface RelationDefinition {
+      _type: 'relation';
+      relationType: 'one' | 'many';
+      targetTable: string;
+      on: string;
+      references: string;
+    }
+
+
+    // --- TYPE INFERENCE MAGIC ---
+
+
+    type BaseModels<TTables extends Record<string, Record<string,
+    ColumnDefinition<any>>>> = {
+      [TableName in keyof TTables]: {
+        [ColumnName in keyof TTables[TableName]]: TTables[TableName][ColumnName]['_tsType'];
+      };
+    };
+
+
+    type WithRelations<
+      TBaseModels extends Record<string, any>,
+      TRelations extends Record<string, Record<string, RelationDefinition>>
+    > = {
+        [TableName in keyof TBaseModels]: TBaseModels[TableName] & (TableName extends keyof TRelations ? {
+          [RelationName in keyof TRelations[TableName]]?: TRelations[TableName][RelationName]['relationType'] extends 'one'
+          ? TBaseModels[TRelations[TableName][RelationName]['targetTable']] | null
+          : TBaseModels[TRelations[TableName][RelationName]['targetTable']][];
+        } : {});
+      };
+
+    export interface KonroSchema<
+      TTables extends Record<string, Record<string, ColumnDefinition<any>>>,
+      TRelations extends Record<string, Record<string, RelationDefinition>>
+    > {
+      tables: TTables;
+      relations: TRelations;
+      types: Pretty<WithRelations<BaseModels<TTables>, TRelations>>;
+    }
+
+
+    // --- SCHEMA HELPERS ---
+
+
+    export const id = (): ColumnDefinition<number> => ({ _type: 'column',
+    dataType: 'id', options: { unique: true }, _tsType: 0 });
+
+    export const string = (options?: StringColumnOptions):
+    ColumnDefinition<string> => ({ _type: 'column', dataType: 'string', options,
+    _tsType: '' });
+
+    export const number = (options?: NumberColumnOptions):
+    ColumnDefinition<number> => ({ _type: 'column', dataType: 'number', options,
+    _tsType: 0 });
+
+    export const boolean = (options?: ColumnOptions<boolean>):
+    ColumnDefinition<boolean> => ({ _type: 'column', dataType: 'boolean',
+    options, _tsType: false });
+
+    export const date = (options?: ColumnOptions<Date>): ColumnDefinition<Date>
+    => ({ _type: 'column', dataType: 'date', options, _tsType: new Date() });
+
+    export const object = <T extends Record<string, any>>(options?:
+    ColumnOptions<T>): ColumnDefinition<T> => ({ _type: 'column', dataType:
+    'object', options, _tsType: undefined! });
+
+
+    export const one = (targetTable: string, options: { on: string; references:
+    string }): RelationDefinition => ({ _type: 'relation', relationType: 'one',
+    targetTable, ...options });
+
+    export const many = (targetTable: string, options: { on: string; references:
+    string }): RelationDefinition => ({ _type: 'relation', relationType: 'many',
+    targetTable, ...options });
+
+
+    // --- SCHEMA BUILDER ---
+
+
+    type SchemaInputDef<T> = {
+      tables: T;
+      relations?: (tables: T) => Record<string, Record<string, RelationDefinition>>;
+    };
+
+
+    export function createSchema<const TDef extends
+    SchemaInputDef<Record<string, Record<string,
+    ColumnDefinition<any>>>>>(definition: TDef) {
+      const relations = definition.relations ? definition.relations(definition.tables) : {};
+      return {
+        tables: definition.tables,
+        relations,
+        types: null as any, // This is a runtime placeholder for the inferred types
+      } as KonroSchema<
+        TDef['tables'],
+        TDef['relations'] extends (...args: any) => any ? ReturnType<TDef['relations']> : {}
+      >;
+    }
+  test/unit/Schema/ColumnHelpers.test.ts: |-
+    import { describe, it, expect } from 'bun:test';
+    import { konro } from '../../../src/index';
+
+    describe('Unit > Schema > ColumnHelpers', () => {
+      it('should create a valid ID column definition object when calling konro.id()', () => {
+        const idCol = konro.id();
+        expect(idCol).toEqual({
+          _type: 'column',
+          dataType: 'id',
+          options: { unique: true },
+          _tsType: 0,
+        });
+      });
+
+      it('should create a valid string column definition with all specified options', () => {
+        const defaultFn = () => 'default';
+        const stringCol = konro.string({
+          unique: true,
+          default: defaultFn,
+          min: 5,
+          max: 100,
+          format: 'email',
+        });
+        expect(stringCol).toEqual({
+          _type: 'column',
+          dataType: 'string',
+          options: {
+            unique: true,
+            default: defaultFn,
+            min: 5,
+            max: 100,
+            format: 'email',
+          },
+          _tsType: '',
+        });
+      });
+
+      it('should create a valid number column definition with all specified options', () => {
+        const numberCol = konro.number({
+          unique: false,
+          default: 0,
+          min: 0,
+          max: 1000,
+          type: 'integer',
+        });
+        expect(numberCol).toEqual({
+          _type: 'column',
+          dataType: 'number',
+          options: {
+            unique: false,
+            default: 0,
+            min: 0,
+            max: 1000,
+            type: 'integer',
+          },
+          _tsType: 0,
+        });
+      });
+
+      it('should create a valid boolean column definition with a default value', () => {
+        const boolCol = konro.boolean({ default: false });
+        expect(boolCol).toEqual({
+          _type: 'column',
+          dataType: 'boolean',
+          options: { default: false },
+          _tsType: false,
+        });
+      });
+
+      it('should create a valid date column definition with a default function', () => {
+        const defaultDateFn = () => new Date();
+        const dateCol = konro.date({ default: defaultDateFn });
+        expect(dateCol).toEqual({
+          _type: 'column',
+          dataType: 'date',
+          options: { default: defaultDateFn },
+          _tsType: expect.any(Date),
+        });
+        expect(dateCol.options?.default).toBe(defaultDateFn);
+      });
+
+      it('should create a valid object column definition', () => {
+        const objCol = konro.object<{ meta: string }>();
+        expect(objCol).toEqual({
+          _type: 'column',
+          dataType: 'object',
+          options: undefined,
+          _tsType: undefined,
+        });
+      });
+    });
+approved: true

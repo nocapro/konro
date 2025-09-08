@@ -1,0 +1,907 @@
+uuid: 185e5108-59c2-401d-9e1e-28b9487c0627
+projectId: konro
+createdAt: '2025-07-09T08:58:28.109Z'
+linesAdded: 75
+linesRemoved: 16
+gitCommitMsg: 'feat(schema): add `optional` property to column definitions'
+promptSummary: >-
+  User wants to add an `optional: true` property to column definitions like
+  string and number, making them nullable and optional on create.
+reasoning:
+  - >-
+    Of course. It's a great feature to allow columns to be optional (and
+    therefore nullable). This improves flexibility. Here are the required
+    changes to implement this across your library, ensuring type safety and
+    correct runtime behavior.
+  - '### Reasoning'
+  - >-
+    1.  **Schema Definition (`src/schema.ts`)**: I will update the column helper
+    functions (`string`, `number`, `boolean`, `date`, `object`) to accept an
+    `optional: true` property in their options. I'll use TypeScript function
+    overloads to achieve this. When `optional: true` is provided, the function
+    will return a `ColumnDefinition<T | null>`, making the column nullable in
+    the TypeScript types.
+  - >-
+    2.  **Type Inference (`src/types.ts`)**: The `OptionalCreateKeys` utility
+    type determines which fields are optional when creating a new record. I will
+    update it to recognize columns marked with `optional: true` as optional for
+    insertion, alongside columns with `default` values or `id` types.
+  - >-
+    3.  **Validation Logic (`src/operations.ts`)**: A `unique` constraint should
+    typically allow multiple `null` values. I will modify the `validateRecord`
+    function to ignore `null` values when checking for uniqueness, which is the
+    expected behavior in most database systems.
+  - '---'
+  - >-
+    First, I'll update the type definition for `OptionalCreateKeys` to make
+    optional fields truly optional in `create` operations.
+  - >-
+    Next, I'll adjust the validation logic to correctly handle unique
+    constraints on nullable fields.
+  - >-
+    Finally, I'll update the schema helpers to support the `optional` property
+    and infer the correct nullable types.
+  - >-
+    These changes introduce the `optional` property to your column definitions,
+    making your schema more expressive and aligning its runtime behavior with
+    TypeScript's static analysis.
+  - '---'
+operations:
+  - type: write
+    path: src/types.ts
+    content: >-
+      <<<<<<< SEARCH
+
+      /** Finds all column names in a table definition that are optional for
+      insertion (i.e., `id` or has a `default`). */
+
+      type OptionalCreateKeys<TTableDef> = {
+        [K in keyof TTableDef]: TTableDef[K] extends { dataType: 'id' }
+          ? K
+          : TTableDef[K] extends { options: { default: unknown } }
+          ? K
+          : never;
+      }[keyof TTableDef];
+
+      =======
+
+      /** Finds all column names in a table definition that are optional for
+      insertion (i.e., `id`, has a `default`, or is `optional`). */
+
+      type OptionalCreateKeys<TTableDef> = {
+        [K in keyof TTableDef]: TTableDef[K] extends { dataType: 'id' }
+          ? K
+          : TTableDef[K] extends { options: { default: unknown } }
+          ? K
+          : TTableDef[K] extends { options: { optional: true } }
+          ? K
+          : never;
+      }[keyof TTableDef];
+
+      >>>>>>> REPLACE
+    patchStrategy: multi-search-replace
+  - type: write
+    path: src/operations.ts
+    content: |-
+      <<<<<<< SEARCH
+          // Validate unique constraint
+          if (options.unique && existingRecords.some(r => r[columnName] === value)) {
+            throw KonroValidationError({ code: 'E300', value: String(value), columnName });
+          }
+      =======
+          // Validate unique constraint, allowing multiple nulls
+          if (options.unique && value !== null && existingRecords.some(r => r[columnName] === value)) {
+            throw KonroValidationError({ code: 'E300', value: String(value), columnName });
+          }
+      >>>>>>> REPLACE
+    patchStrategy: multi-search-replace
+  - type: write
+    path: src/schema.ts
+    content: >-
+      --- src/schema.ts
+
+      +++ src/schema.ts
+
+      @@ -48,15 +48,68 @@
+       export const id = () => createColumn<number>('id', { unique: true, _pk_strategy: 'auto-increment' }, 0);
+       /** A managed, universally unique identifier (UUID) primary key. Stored as a string. */
+       export const uuid = () => createColumn<string>('id', { unique: true, _pk_strategy: 'uuid' }, '');
+      -/** A string column with optional validation. */
+
+      -export const string = (options?: { unique?: boolean; default?: string |
+      (() => string); min?: number; max?: number; format?: 'email' | 'uuid' |
+      'url' }) => createColumn<string>('string', options, '');
+
+      -/** A number column with optional validation. */
+
+      -export const number = (options?: { unique?: boolean; default?: number |
+      (() => number); min?: number; max?: number; type?: 'integer' }) =>
+      createColumn<number>('number', options, 0);
+
+      -/** A boolean column. */
+
+      -export const boolean = (options?: { default?: boolean | (() => boolean)
+      }) => createColumn<boolean>('boolean', options, false);
+
+      -/** A generic date column. Consider using `createdAt` or `updatedAt` for
+      managed timestamps. */
+
+      -export const date = (options?: { default?: Date | (() => Date) }) =>
+      createColumn<Date>('date', options, new Date());
+
+      +
+
+      +// A shared base type for options to avoid repetition in overloads.
+
+      +type BaseStringOptions = {
+
+      +  unique?: boolean;
+
+      +  min?: number;
+
+      +  max?: number;
+
+      +  format?: 'email' | 'uuid' | 'url';
+
+      +};
+
+      +/** A string column with optional validation. */
+
+      +export function string(options: BaseStringOptions & { optional: true;
+      default?: string | null | (() => string | null) }):
+      ColumnDefinition<string | null>;
+
+      +export function string(options?: BaseStringOptions & { optional?: false;
+      default?: string | (() => string) }): ColumnDefinition<string>;
+
+      +export function string(options?: BaseStringOptions & { optional?:
+      boolean; default?: string | null | (() => string | null) | (() => string)
+      }): ColumnDefinition<string> | ColumnDefinition<string | null> {
+
+      +  if (options?.optional) {
+
+      +    return createColumn<string | null>('string', options, null);
+
+      +  }
+
+      +  return createColumn<string>('string', options, '');
+
+      +}
+
+      +
+
+      +type BaseNumberOptions = {
+
+      +  unique?: boolean;
+
+      +  min?: number;
+
+      +  max?: number;
+
+      +  type?: 'integer';
+
+      +};
+
+      +/** A number column with optional validation. */
+
+      +export function number(options: BaseNumberOptions & { optional: true;
+      default?: number | null | (() => number | null) }):
+      ColumnDefinition<number | null>;
+
+      +export function number(options?: BaseNumberOptions & { optional?: false;
+      default?: number | (() => number) }): ColumnDefinition<number>;
+
+      +export function number(options?: BaseNumberOptions & { optional?:
+      boolean; default?: number | null | (() => number | null) | (() => number)
+      }): ColumnDefinition<number> | ColumnDefinition<number | null> {
+
+      +  if (options?.optional) {
+
+      +    return createColumn<number | null>('number', options, null);
+
+      +  }
+
+      +  return createColumn<number>('number', options, 0);
+
+      +}
+
+      +
+
+      +/** A boolean column. */
+
+      +export function boolean(options: { optional: true; default?: boolean |
+      null | (() => boolean | null) }): ColumnDefinition<boolean | null>;
+
+      +export function boolean(options?: { optional?: false; default?: boolean |
+      (() => boolean) }): ColumnDefinition<boolean>;
+
+      +export function boolean(options?: { optional?: boolean; default?: boolean
+      | null | (() => boolean | null) | (() => boolean) }):
+      ColumnDefinition<boolean> | ColumnDefinition<boolean | null> {
+
+      +  if (options?.optional) {
+
+      +    return createColumn<boolean | null>('boolean', options, null);
+
+      +  }
+
+      +  return createColumn<boolean>('boolean', options, false);
+
+      +}
+
+      +
+
+      +/** A generic date column. Consider using `createdAt` or `updatedAt` for
+      managed timestamps. */
+
+      +export function date(options: { optional: true; default?: Date | null |
+      (() => Date | null) }): ColumnDefinition<Date | null>;
+
+      +export function date(options?: { optional?: false; default?: Date | (()
+      => Date) }): ColumnDefinition<Date>;
+
+      +export function date(options?: { optional?: boolean; default?: Date |
+      null | (() => Date | null) | (() => Date) }): ColumnDefinition<Date> |
+      ColumnDefinition<Date | null> {
+
+      +  if (options?.optional) {
+
+      +    return createColumn<Date | null>('date', options, null);
+
+      +  }
+
+      +  return createColumn<Date>('date', options, new Date());
+
+      +}
+
+      +
+       /** A managed timestamp set when a record is created. */
+       export const createdAt = (): ColumnDefinition<Date> => createColumn<Date>('date', { _konro_sub_type: 'createdAt', default: () => new Date() }, new Date());
+       /** A managed timestamp set when a record is created and updated. */
+      @@ -64,7 +117,18 @@
+       /** A managed, nullable timestamp for soft-deleting records. */
+       export const deletedAt = (): ColumnDefinition<Date | null> => createColumn<Date | null>('date', { _konro_sub_type: 'deletedAt', default: null }, null);
+       /** A column for storing arbitrary JSON objects, with a generic for type safety. */
+      -export const object = <T extends Record<string, unknown>>(options?: {
+      default?: T | (() => T) }): ColumnDefinition<T> => ({ _type: 'column',
+      dataType: 'object', options });
+
+      +export function object<T extends Record<string, unknown>>(options: {
+      optional: true; default?: T | null | (() => T | null) }):
+      ColumnDefinition<T | null>;
+
+      +export function object<T extends Record<string, unknown>>(options?: {
+      optional?: false; default?: T | (() => T) }): ColumnDefinition<T>;
+
+      +export function object<T extends Record<string, unknown>>(
+
+      +  options?: { optional?: boolean; default?: T | null | (() => T | null) |
+      (() => T) }
+
+      +): ColumnDefinition<T | null> | ColumnDefinition<T> {
+
+      +  if (options?.optional) {
+
+      +    // The cast here is to satisfy the generic constraint on the
+      implementation.
+
+      +    // The phantom type will be `T | null`.
+
+      +    return { _type: 'column', dataType: 'object', options } as
+      ColumnDefinition<T | null>;
+
+      +  }
+
+      +  return { _type: 'column', dataType: 'object', options };
+
+      +}
+       
+       
+       // --- RELATIONSHIP DEFINITION HELPERS ---
+    patchStrategy: new-unified
+snapshot:
+  src/types.ts: >-
+    // --- Schema Definition Types (from schema.ts) ---
+
+
+    /** The definition for a database column, created by helpers like
+    `konro.string()`. */
+
+    export interface ColumnDefinition<T> {
+      readonly _type: 'column';
+      readonly dataType: 'id' | 'string' | 'number' | 'boolean' | 'date' | 'object';
+      readonly options: any;
+      readonly _tsType?: T; // Phantom type, does not exist at runtime
+    }
+
+
+    /** The definition for a table relationship, created by `konro.one()` or
+    `konro.many()`. */
+
+    export interface BaseRelationDefinition {
+      readonly _type: 'relation';
+      readonly targetTable: string;
+      readonly on: string;
+      readonly references: string;
+      readonly onDelete?: 'CASCADE' | 'SET NULL';
+    }
+
+
+    export interface OneRelationDefinition extends BaseRelationDefinition {
+      readonly relationType: 'one';
+    }
+
+
+    export interface ManyRelationDefinition extends BaseRelationDefinition {
+      readonly relationType: 'many';
+    }
+
+
+    export type RelationDefinition = OneRelationDefinition |
+    ManyRelationDefinition;
+
+
+    /** The definition for a data aggregation, created by `konro.count()`,
+    `konro.sum()`, etc. */
+
+    export interface AggregationDefinition {
+      readonly _type: 'aggregation';
+      readonly aggType: 'count' | 'sum' | 'avg' | 'min' | 'max';
+      readonly column?: string;
+    }
+
+
+    /** Infers the underlying TypeScript type from a `ColumnDefinition`. e.g.,
+    `ColumnDefinition<string>` => `string`. */
+
+    type InferColumnType<C> = C extends ColumnDefinition<infer T> ? T : never;
+
+
+    /** A mapping of table names to their base model types (columns only, no
+    relations). */
+
+    export type BaseModels<TTables extends Record<string, any>> = {
+      [TableName in keyof TTables]: {
+        [ColumnName in keyof TTables[TableName]]: InferColumnType<TTables[TableName][ColumnName]>;
+      };
+    };
+
+
+    /** A mapping of table names to their full model types, including relations.
+    */
+
+    type Models<
+      TTables extends Record<string, any>,
+      TRelations extends Record<string, any>,
+      TBaseModels extends Record<keyof TTables, any>
+    > = {
+      [TableName in keyof TTables]: TBaseModels[TableName] &
+        (TableName extends keyof TRelations
+          ? {
+              [RelationName in keyof TRelations[TableName]]?: TRelations[TableName][RelationName] extends OneRelationDefinition
+                ? Models<TTables, TRelations, TBaseModels>[TRelations[TableName][RelationName]['targetTable']] | null
+                : TRelations[TableName][RelationName] extends ManyRelationDefinition
+                ? Models<TTables, TRelations, TBaseModels>[TRelations[TableName][RelationName]['targetTable']][]
+                : never;
+            }
+          : {});
+    };
+
+
+    /** Finds all column names in a table definition that are optional for
+    insertion (i.e., `id` or has a `default`). */
+
+    type OptionalCreateKeys<TTableDef> = {
+      [K in keyof TTableDef]: TTableDef[K] extends { dataType: 'id' }
+        ? K
+        : TTableDef[K] extends { options: { default: unknown } }
+        ? K
+        : never;
+    }[keyof TTableDef];
+
+
+    /** A mapping of table names to their "create" types, used for `db.insert`.
+    */
+
+    type CreateModels<
+      TTables extends Record<string, any>,
+      TBaseModels extends Record<keyof TTables, any>
+    > = {
+      [TableName in keyof TTables]: Omit<
+        {
+          // Required fields
+          [K in Exclude<keyof TBaseModels[TableName], OptionalCreateKeys<TTables[TableName]>>]: TBaseModels[TableName][K];
+        } & {
+          // Optional fields
+          [K in OptionalCreateKeys<TTables[TableName]>]?: TBaseModels[TableName][K];
+        },
+        // 'id' is always omitted from create types
+        'id'
+      >;
+    };
+
+
+    /** The publicly exposed structure of a fully-processed Konro schema. */
+
+    export interface KonroSchema<
+      TTables extends Record<string, any>,
+      TRelations extends Record<string, any>
+    > {
+      tables: TTables;
+      relations: TRelations;
+      /** The full, relational types for each table model. */
+      types: Models<TTables, TRelations, BaseModels<TTables>>;
+      /** The base types for each table model, without any relations. */
+      base: BaseModels<TTables>;
+      /** The types for creating new records, with defaults and `id` made optional. */
+      create: CreateModels<TTables, BaseModels<TTables>>;
+    }
+
+
+
+    // --- Generic & Core Types ---
+
+
+    /** A generic representation of a single record within a table. It uses
+    `unknown` for values to enforce type-safe access. */
+
+    export type KRecord = Record<string, unknown>;
+
+
+    /** Represents the state of a single table, including its records and
+    metadata. */
+
+    export type TableState<T extends KRecord = KRecord> = {
+      records: T[];
+      meta: {
+        lastId: number;
+      };
+    };
+
+
+    /** The in-memory representation of the entire database. It is a plain,
+    immutable object. */
+
+    export type DatabaseState<S extends KonroSchema<any, any> | unknown =
+    unknown> = S extends KonroSchema<any, any>
+      ? {
+          [TableName in keyof S['tables']]: TableState<BaseModels<S['tables']>[TableName]>;
+        }
+      : {
+          [tableName: string]: TableState;
+        };
+
+
+    // --- FS Provider Types (from fs.ts) ---
+
+    export interface FsProvider {
+      readFile(filepath: string): Promise<string | null>;
+      writeFile(filepath: string, content: string, encoding: 'utf-8'): Promise<void>;
+      rename(oldPath: string, newPath: string): Promise<void>;
+      mkdir(dir: string, options: { recursive: true }): Promise<string | undefined>;
+      readdir(dir: string): Promise<string[]>;
+      unlink(filepath: string): Promise<void>;
+    }
+
+
+
+    // --- Serializer Types (from utils/serializer.util.ts) ---
+
+    export type Serializer = {
+      parse: <T>(data: string, tableSchema?: Record<string, ColumnDefinition<any>>) => T;
+      stringify: (obj: any) => string;
+    };
+
+
+
+    // --- Storage Adapter Types (from adapter.ts) ---
+
+
+    export interface StorageAdapter {
+      read<S extends KonroSchema<any, any>>(schema: S): Promise<DatabaseState<S>>;
+      write(state: DatabaseState<any>, schema: KonroSchema<any, any>): Promise<void>;
+      readonly mode: 'in-memory' | 'on-demand';
+    }
+
+
+    export interface FileStorageAdapter extends StorageAdapter {
+      readonly options: FileAdapterOptions;
+      readonly fs: FsProvider;
+      readonly serializer: Serializer;
+      readonly fileExtension: string;
+    }
+
+
+    export type SingleFileStrategy = { single: { filepath: string }; multi?:
+    never; perRecord?: never };
+
+    export type MultiFileStrategy = { multi: { dir: string }; single?: never;
+    perRecord?: never };
+
+    export type PerRecordStrategy = { perRecord: { dir: string }; single?:
+    never; multi?: never };
+
+
+    export type FileAdapterOptions = {
+      format: 'json' | 'yaml' | 'csv' | 'xlsx';
+      fs?: FsProvider;
+      /**
+       * Defines the data access strategy.
+       * - `in-memory`: (Default) Loads the entire database into memory on init. Fast for small/medium datasets.
+       * - `on-demand`: Reads from the file system for each query. Slower but supports larger datasets. Requires 'multi-file' or 'per-record' strategy.
+       */
+      mode?: 'in-memory' | 'on-demand';
+    } & (SingleFileStrategy | MultiFileStrategy | PerRecordStrategy);
+
+
+
+    // --- Operation Descriptor Types (from operations.ts) ---
+
+
+    export type WithClause = Record<string, boolean | {
+      where?: (record: KRecord) => boolean;
+      select?: Record<string, ColumnDefinition<unknown>>;
+      with?: WithClause;
+    }>;
+
+
+    export interface QueryDescriptor {
+      tableName: string;
+      select?: Record<string, ColumnDefinition<unknown> | RelationDefinition>;
+      where?: (record: KRecord) => boolean;
+      with?: WithClause;
+      limit?: number;
+      offset?: number;
+      withDeleted?: boolean;
+    }
+
+
+    export interface AggregationDescriptor extends QueryDescriptor {
+      aggregations: Record<string, AggregationDefinition>;
+    }
+
+
+
+    // --- DB Context & Fluent API Types (from db.ts) ---
+
+
+    type RelatedModel<T> = T extends (infer R)[] ? R : T extends (infer R |
+    null) ? R : T;
+
+
+    export type WithArgument<TAll> = {
+      [K in keyof TAll as NonNullable<TAll[K]> extends any[] | object ? K : never]?: boolean | ({
+        where?: (record: RelatedModel<NonNullable<TAll[K]>>) => boolean;
+      } & (
+        | { select: Record<string, ColumnDefinition<unknown>>; with?: never }
+        | { select?: never; with?: WithArgument<RelatedModel<NonNullable<TAll[K]>>> }
+      ));
+    };
+
+
+    export type ResolveWith<
+      S extends KonroSchema<any, any>,
+      TName extends keyof S['tables'],
+      TWith extends WithArgument<S['types'][TName]>
+    > = {
+        [K in keyof TWith & keyof S['relations'][TName]]:
+            S['relations'][TName][K] extends { relationType: 'many' }
+                ? (
+                    TWith[K] extends { select: infer TSelect }
+                        ? ({ [P in keyof TSelect]: InferColumnType<TSelect[P]> })[]
+                        : TWith[K] extends { with: infer TNestedWith }
+                            ? (S['base'][S['relations'][TName][K]['targetTable']] & ResolveWith<S, S['relations'][TName][K]['targetTable'], TNestedWith & WithArgument<S['types'][S['relations'][TName][K]['targetTable']]>>)[]
+                            : S['base'][S['relations'][TName][K]['targetTable']][]
+                  )
+                : S['relations'][TName][K] extends { relationType: 'one' }
+                    ? (
+                        TWith[K] extends { select: infer TSelect }
+                            ? ({ [P in keyof TSelect]: InferColumnType<TSelect[P]> }) | null
+                            : TWith[K] extends { with: infer TNestedWith }
+                                ? (S['base'][S['relations'][TName][K]['targetTable']] & ResolveWith<S, S['relations'][TName][K]['targetTable'], TNestedWith & WithArgument<S['types'][S['relations'][TName][K]['targetTable']]>>) | null
+                                : S['base'][S['relations'][TName][K]['targetTable']] | null
+                      )
+                    : never
+    };
+
+
+    export interface ChainedQueryBuilder<S extends KonroSchema<any, any>, TName
+    extends keyof S['tables'], TReturn> {
+      select(fields: Record<string, ColumnDefinition<unknown> | RelationDefinition>): this;
+      where(predicate: Partial<S['base'][TName]> | ((record: S['base'][TName]) => boolean)): this;
+      withDeleted(): this;
+      with<W extends WithArgument<S['types'][TName]>>(relations: W): ChainedQueryBuilder<S, TName, TReturn & ResolveWith<S, TName, W>>;
+      limit(count: number): this;
+      offset(count: number): this;
+      all(): TReturn[];
+      first(): TReturn | null;
+      aggregate<TAggs extends Record<string, AggregationDefinition>>(
+        aggregations: TAggs
+      ): { [K in keyof TAggs]: number | null };
+    }
+
+
+    export interface QueryBuilder<S extends KonroSchema<any, any>> {
+      from<T extends keyof S['tables']>(tableName: T): ChainedQueryBuilder<S, T, S['base'][T]>;
+    }
+
+
+    export interface UpdateBuilder<S extends KonroSchema<any, any>, TBase,
+    TCreate> {
+      set(data: Partial<TCreate>): {
+        where(predicate: Partial<TBase> | ((record: TBase) => boolean)): [DatabaseState<S>, TBase[]];
+      };
+    }
+
+
+    export interface DeleteBuilder<S extends KonroSchema<any, any>, TBase> {
+      where(predicate: Partial<TBase> | ((record: TBase) => boolean)): [DatabaseState<S>, TBase[]];
+    }
+
+
+    export interface InMemoryDbContext<S extends KonroSchema<any, any>> {
+      schema: S;
+      adapter: StorageAdapter;
+      read(): Promise<DatabaseState<S>>;
+      write(state: DatabaseState<S>): Promise<void>;
+      createEmptyState(): DatabaseState<S>;
+
+      query(state: DatabaseState<S>): QueryBuilder<S>;
+      insert<T extends keyof S['tables']>(state: DatabaseState<S>, tableName: T, values: S['create'][T]): [DatabaseState<S>, S['base'][T]];
+      insert<T extends keyof S['tables']>(state: DatabaseState<S>, tableName: T, values: Readonly<S['create'][T]>[]): [DatabaseState<S>, S['base'][T][]];
+      update<T extends keyof S['tables']>(state: DatabaseState<S>, tableName: T): UpdateBuilder<S, S['base'][T], S['create'][T]>;
+      delete<T extends keyof S['tables']>(state: DatabaseState<S>, tableName: T): DeleteBuilder<S, S['base'][T]>;
+    }
+
+
+    export interface OnDemandChainedQueryBuilder<S extends KonroSchema<any,
+    any>, TName extends keyof S['tables'], TReturn> {
+      select(fields: Record<string, ColumnDefinition<unknown> | RelationDefinition>): this;
+      where(predicate: Partial<S['base'][TName]> | ((record: S['base'][TName]) => boolean)): this;
+      withDeleted(): this;
+      with<W extends WithArgument<S['types'][TName]>>(relations: W): OnDemandChainedQueryBuilder<S, TName, TReturn & ResolveWith<S, TName, W>>;
+      limit(count: number): this;
+      offset(count: number): this;
+      all(): Promise<TReturn[]>;
+      first(): Promise<TReturn | null>;
+      aggregate<TAggs extends Record<string, AggregationDefinition>>(
+        aggregations: TAggs
+      ): Promise<{ [K in keyof TAggs]: number | null }>;
+    }
+
+
+    export interface OnDemandQueryBuilder<S extends KonroSchema<any, any>> {
+      from<T extends keyof S['tables']>(tableName: T): OnDemandChainedQueryBuilder<S, T, S['base'][T]>;
+    }
+
+
+    export interface OnDemandUpdateBuilder<TBase, TCreate> {
+      set(data: Partial<TCreate>): {
+        where(predicate: Partial<TBase> | ((record: TBase) => boolean)): Promise<TBase[]>;
+      };
+    }
+
+
+    export interface OnDemandDeleteBuilder<TBase> {
+      where(predicate: Partial<TBase> | ((record: TBase) => boolean)): Promise<TBase[]>;
+    }
+
+
+    export interface OnDemandDbContext<S extends KonroSchema<any, any>> {
+      schema: S;
+      adapter: StorageAdapter;
+      read(): Promise<never>;
+      write(): Promise<never>;
+      createEmptyState(): DatabaseState<S>;
+
+      query(): OnDemandQueryBuilder<S>;
+      insert<T extends keyof S['tables']>(tableName: T, values: S['create'][T]): Promise<S['base'][T]>;
+      insert<T extends keyof S['tables']>(tableName: T, values: Readonly<S['create'][T]>[]): Promise<S['base'][T][]>;
+      update<T extends keyof S['tables']>(tableName: T): OnDemandUpdateBuilder<S['base'][T], S['create'][T]>;
+      delete<T extends keyof S['tables']>(tableName: T): OnDemandDeleteBuilder<S['base'][T]>;
+    }
+
+
+    export type DbContext<S extends KonroSchema<any, any>> =
+    InMemoryDbContext<S> | OnDemandDbContext<S>;
+  src/operations.ts: "import { randomUUID } from 'crypto';\r\nimport type {\n  DatabaseState,\n  KRecord,\n  KonroSchema,\n  RelationDefinition,\n  WithClause,\n  QueryDescriptor,\n  AggregationDescriptor,\n} from './types';\r\nimport { KonroError, KonroValidationError } from './utils/error.util';\r\n\r\n// --- HELPERS ---\r\n\r\n\r\n/** Creates a pristine, empty database state from a schema. */\r\nexport const createEmptyState = <S extends KonroSchema<any, any>>(schema: S): DatabaseState<S> => {\r\n  const state = {} as DatabaseState<S>;\r\n  for (const tableName in schema.tables) {\r\n    // This is a controlled cast, safe because we are iterating over the schema's tables.\r\n    (state as any)[tableName] = { records: [], meta: { lastId: 0 } };\r\n  }\r\n  return state;\r\n};\r\n\r\n// --- QUERY ---\r\n\r\nconst _processWith = <S extends KonroSchema<any, any>>(\r\n  recordsToProcess: KRecord[],\r\n  currentTableName: string,\r\n  withClause: WithClause,\r\n  schema: S,\r\n  state: DatabaseState\r\n): KRecord[] => {\r\n  // structuredClone is important to avoid mutating the records from the previous recursion level or the main state.\r\n  const resultsWithRelations = structuredClone(recordsToProcess);\r\n\r\n  for (const record of resultsWithRelations) {\r\n    for (const relationName in withClause) {\r\n      const relationDef = schema.relations[currentTableName]?.[relationName];\r\n      if (!relationDef) continue;\r\n\r\n      const withOpts = withClause[relationName];\r\n      // Skip if the value is `false` or something not truthy (though types should prevent this)\r\n      if (!withOpts) continue;\r\n\r\n      const relatedRecords = findRelatedRecords(state, record, relationDef);\r\n\r\n      const nestedWhere = typeof withOpts === 'object' ? withOpts.where : undefined;\r\n      const nestedSelect = typeof withOpts === 'object' ? withOpts.select : undefined;\r\n      const nestedWith = typeof withOpts === 'object' ? withOpts.with : undefined;\r\n\r\n      let processedRelatedRecords = nestedWhere ? relatedRecords.filter(nestedWhere) : [...relatedRecords];\r\n\r\n      // Recursively process deeper relations first\r\n      if (nestedWith && processedRelatedRecords.length > 0) {\r\n        processedRelatedRecords = _processWith(\r\n          processedRelatedRecords,\r\n          relationDef.targetTable,\r\n          nestedWith,\r\n          schema,\r\n          state\r\n        );\r\n      }\r\n\r\n      // Then, apply select on the (potentially already processed) related records\r\n      if (nestedSelect) {\r\n        const targetTableSchema = schema.tables[relationDef.targetTable];\r\n        if (!targetTableSchema) throw KonroError({ code: 'E201', tableName: relationDef.targetTable });\r\n\r\n        processedRelatedRecords = processedRelatedRecords.map(rec => {\r\n          const newRec: KRecord = {};\r\n          for (const outputKey in nestedSelect) {\r\n            const def = nestedSelect[outputKey];\r\n            if (!def) continue;\r\n            // nested with() does not support selecting relations, only columns, as per spec.\r\n            if (def._type === 'column') {\r\n              const colName = Object.keys(targetTableSchema).find(key => targetTableSchema[key] === def);\r\n              if (colName && rec.hasOwnProperty(colName)) {\r\n                newRec[outputKey] = rec[colName];\r\n              }\r\n            }\r\n          }\r\n          return newRec;\r\n        });\r\n      }\r\n\r\n      // Finally, attach the results to the parent record\r\n      if (relationDef.relationType === 'one') {\r\n        record[relationName] = processedRelatedRecords[0] ?? null;\r\n      } else {\r\n        record[relationName] = processedRelatedRecords;\r\n      }\r\n    }\r\n  }\r\n\r\n  return resultsWithRelations;\r\n};\r\n\r\nexport const _queryImpl = <S extends KonroSchema<any, any>>(state: DatabaseState, schema: S, descriptor: QueryDescriptor): KRecord[] => {\r\n  const tableState = state[descriptor.tableName];\r\n  if (!tableState) return [];\r\n\r\n  const tableSchema = schema.tables[descriptor.tableName];\r\n  if (!tableSchema) throw KonroError({ code: 'E201', tableName: descriptor.tableName });\r\n  const deletedAtColumn = Object.keys(tableSchema).find(key => tableSchema[key]?.options?._konro_sub_type === 'deletedAt');\r\n\r\n  // 1. Filter\r\n  let results: KRecord[];\r\n\r\n  // Auto-filter soft-deleted records unless opted-out\r\n  if (deletedAtColumn && !descriptor.withDeleted) {\r\n    results = tableState.records.filter(r => r[deletedAtColumn] === null || r[deletedAtColumn] === undefined);\r\n  } else {\r\n    results = [...tableState.records];\r\n  }\r\n  \r\n  results = descriptor.where ? results.filter(descriptor.where) : results;\r\n\r\n  // 2. Eager load relations (`with`) - must happen after filtering\r\n  if (descriptor.with) {\r\n    results = \r\n_processWith(results, descriptor.tableName, descriptor.with, schema, state);\r\n  }\r\n\r\n  // 3. Paginate\r\n  const offset = descriptor.offset ?? 0;\r\n  const limit = descriptor.limit ?? results.length;\r\n  let paginatedResults = results.slice(offset, offset + limit);\r\n\r\n  // 4. Select Fields\r\n  if (descriptor.select) {\r\n    const relationsSchema = schema.relations[descriptor.tableName] ?? {};\r\n\r\n    paginatedResults = paginatedResults.map(rec => {\r\n      const newRec: KRecord = {};\r\n      for (const outputKey in descriptor.select!) {\r\n        const def = descriptor.select![outputKey];\r\n        if (!def) continue;\r\n        if (def._type === 'column') {\r\n          const colName = Object.keys(tableSchema).find(key => tableSchema[key] === def);\r\n          if (colName && rec.hasOwnProperty(colName)) {\r\n            newRec[outputKey] = rec[colName];\r\n          }\r\n        } else if (def._type === 'relation') {\r\n          const relName = Object.keys(relationsSchema).find(key => relationsSchema[key] === def);\r\n          if (relName && rec.hasOwnProperty(relName)) {\r\n            newRec[outputKey] = rec[relName];\r\n          }\r\n        }\r\n      }\r\n      return newRec;\r\n    });\r\n  }\r\n\r\n  return paginatedResults;\r\n};\r\n\r\nconst findRelatedRecords = (state: DatabaseState, record: KRecord, relationDef: RelationDefinition) => {\r\n  const foreignKey = record[relationDef.on];\r\n  const targetTable = state[relationDef.targetTable];\r\n\r\n  if (foreignKey === undefined || !targetTable) return [];\r\n\r\n  // one-to-many: 'on' is PK on current table, 'references' is FK on target\r\n  if (relationDef.relationType === 'many') {\r\n    return targetTable.records.filter(r => r[relationDef.references] === foreignKey);\r\n  }\r\n\r\n  // many-to-one: 'on' is FK on current table, 'references' is PK on target\r\n  if (relationDef.relationType === 'one') {\r\n    return targetTable.records.filter(r => r[relationDef.references] === foreignKey);\r\n  }\r\n\r\n  return [];\r\n};\r\n\r\n// --- AGGREGATION ---\r\n\r\nexport const _aggregateImpl = <S extends KonroSchema<any, any>>(\r\n  state: DatabaseState,\r\n  _schema: S, // Not used but keep for API consistency\r\n  descriptor: AggregationDescriptor\r\n): Record<string, number | null> => {\r\n  const tableState = state[descriptor.tableName];\r\n  if (!tableState) return {};\r\n\r\n  const filteredRecords = descriptor.where ? tableState.records.filter(descriptor.where) : [...tableState.records];\r\n  const results: Record<string, number | null> = {};\r\n\r\n  for (const resultKey in descriptor.aggregations) {\r\n    const aggDef = descriptor.aggregations[resultKey];\r\n    if (!aggDef) continue;\r\n\r\n    if (aggDef.aggType === 'count') {\r\n      results[resultKey] = filteredRecords.length;\r\n      continue;\r\n    }\r\n\r\n    if (!aggDef.column) {\r\n      throw KonroError({ code: 'E203', aggType: aggDef.aggType });\r\n    }\r\n    const column = aggDef.column;\r\n\r\n    const values = filteredRecords.map(r => r[column]).filter(v => typeof v === 'number') as number[];\r\n\r\n    if (values.length === 0) {\r\n      if (aggDef.aggType === 'sum') {\r\n        results[resultKey] = 0; // sum of empty set is 0\r\n      } else {\r\n        results[resultKey] = null; // avg, min, max of empty set is null\r\n      }\r\n      continue;\r\n    }\r\n\r\n    switch (aggDef.aggType) {\r\n      case 'sum':\r\n        results[resultKey] = values.reduce((sum, val) => sum + val, 0);\r\n        break;\r\n      case 'avg':\r\n        results[resultKey] = values.reduce((sum, val) => sum + val, 0) / values.length;\r\n        break;\r\n      case 'min':\r\n        results[resultKey] = Math.min(...values);\r\n        break;\r\n      case 'max':\r\n        results[resultKey] = Math.max(...values);\r\n        break;\r\n    }\r\n  }\r\n  return results;\r\n};\r\n\r\n// --- INSERT ---\r\n\r\nexport const _insertImpl = <S extends KonroSchema<any, any>>(state: DatabaseState, schema: S, tableName: string, values: KRecord[]): [DatabaseState, KRecord[]] => {\r\n  const oldTableState = state[tableName];\r\n  if (!oldTableState) throw KonroError({ code: 'E200', tableName });\r\n\r\n  // To maintain immutability, we deep-clone only the table being modified.\r\n  const tableState = structuredClone(oldTableState);\r\n  const tableSchema = schema.tables[tableName];\r\n  if (!tableSchema) throw KonroError({ code: 'E201', tableName });\r\n  const insertedRecords: KRecord[] = [];\r\n\r\n  for (const value of values) {\r\n    const newRecord: KRecord = { ...value };\r\n    // Handle IDs and defaults\r\n    for (const colName in tableSchema) {\r\n      const colDef = tableSchema[colName];\r\n      if (colDef.dataType === 'id') {\r\n        if (newRecord[colName] === undefined) {\r\n          // Generate new PK if not provided\r\n          if (colDef.options?._pk_strategy === 'uuid') {\r\n            newRecord[colName] = randomUUID();\r\n          } else { // 'auto-increment' or legacy undefined strategy\r\n            tableState.meta.lastId++;\r\n            newRecord[colName] = tableState.meta.lastId;\r\n          }\r\n        } else {\r\n          // If user provided an ID for an auto-increment table, update lastId to avoid future collisions.\r\n          if (colDef.options?._pk_strategy !== 'uuid' && typeof newRecord[colName] === 'number') {\r\n            tableState.meta.lastId = Math.max(tableState.meta.lastId, newRecord[colName] as number);\r\n          }\r\n        }\r\n      }\r\n      if (newRecord[colName] === undefined && colDef.options?.default !== undefined) {\r\n        newRecord[colName] = typeof colDef.options.default === 'function' ? colDef.options.default() : colDef.options.default;\r\n      }\r\n    }\r\n\r\n    // Validate the record before inserting\r\n    validateRecord(newRecord, tableSchema, tableState.records);\r\n\r\n    tableState.records.push(newRecord);\r\n    insertedRecords.push(newRecord);\r\n  }\r\n\r\n  const newState = { ...state, [tableName]: tableState };\r\n  return [newState, insertedRecords];\r\n};\r\n\r\n// --- UPDATE ---\r\n\r\nexport const _updateImpl = <S extends KonroSchema<any, any>>(state: DatabaseState, schema: S, tableName: string, data: Partial<KRecord>, predicate: (record: KRecord) => boolean): [DatabaseState, KRecord[]] => {\r\n  const oldTableState = state[tableName];\r\n  if (!oldTableState) throw KonroError({ code: 'E200', tableName });\r\n\r\n  const tableSchema = schema.tables[tableName];\r\n  if (!tableSchema) {\r\n    throw KonroError({ code: 'E201', tableName });\r\n  }\r\n\r\n  const updatedRecords: KRecord[] = [];\r\n\r\n  // Auto-update 'updatedAt' timestamp\r\n  for (const colName of Object.keys(tableSchema)) {\r\n      if (tableSchema[colName]?.options?._konro_sub_type === 'updatedAt') {\r\n          (data as KRecord)[colName] = new Date();\r\n      }\r\n  }\r\n\r\n  const updateData = { ...data };\r\n  // Find the ID column from the schema and prevent it from being updated.\r\n  const idColumn = Object.entries(tableSchema).find(([, colDef]) => {\r\n    return colDef && typeof colDef === 'object' && '_type' in colDef && colDef._type === 'column' && 'dataType' in colDef && colDef.dataType === 'id';\r\n  })?.[0];\r\n  if (idColumn && updateData[idColumn] !== undefined) {\r\n    delete updateData[idColumn];\r\n  }\r\n\r\n  const newRecords = oldTableState.records.map(record => {\r\n    if (predicate(record)) {\r\n      const updatedRecord = { ...record, ...updateData };\r\n\r\n      // Validate the updated record, excluding current record from unique checks\r\n      const otherRecords = oldTableState.records.filter(r => r !== record);\r\n      validateRecord(updatedRecord, tableSchema, otherRecords);\r\n\r\n      updatedRecords.push(updatedRecord);\r\n      return updatedRecord;\r\n    }\r\n    return record;\r\n  });\r\n\r\n  if (updatedRecords.length === 0) {\r\n    return [state, []];\r\n  }\r\n\r\n  const tableState = { ...oldTableState, records: newRecords };\r\n  const newState = { ...state, [tableName]: tableState };\r\n\r\n  return [newState, updatedRecords];\r\n};\r\n\r\n\r\n// --- DELETE ---\r\n\r\nfunction applyCascades<S extends KonroSchema<any, any>>(\r\n  state: DatabaseState<S>,\r\n  schema: S,\r\n  tableName: string,\r\n  deletedRecords: KRecord[]\r\n): DatabaseState<S> {\r\n  if (deletedRecords.length === 0) {\r\n    return state;\r\n  }\r\n\r\n  let nextState = state;\r\n  const relations = schema.relations[tableName] ?? {};\r\n\r\n  for (const relationName in relations) {\r\n    const relationDef = relations[relationName];\r\n    // We only cascade from the \"one\" side of a one-to-many relationship, which is a 'many' type in Konro.\r\n    if (!relationDef || relationDef.relationType !== 'many' || !relationDef.onDelete) {\r\n      continue;\r\n    }\r\n\r\n    const sourceKey = relationDef.on;\r\n    const targetTable = relationDef.targetTable;\r\n    const targetKey = relationDef.references;\r\n\r\n    const sourceKeyValues = deletedRecords.map(r => r[sourceKey]).filter(v => v !== undefined);\r\n    if (sourceKeyValues.length === 0) continue;\r\n\r\n    const sourceKeySet = new Set(sourceKeyValues);\r\n    const predicate = (record: KRecord) => sourceKeySet.has(record[targetKey] as any);\r\n\r\n    if (relationDef.onDelete === 'CASCADE') {\r\n      // Recursively delete\r\n      const [newState, ] = _deleteImpl(nextState, schema, targetTable, predicate);\r\n      nextState = newState as DatabaseState<S>;\r\n    } else if (relationDef.onDelete === 'SET NULL') {\r\n      // Update FK to null\r\n      const [newState, ] = _updateImpl(nextState, schema, targetTable, { [targetKey]: null }, predicate);\r\n      nextState = newState as DatabaseState<S>;\r\n    }\r\n  }\r\n\r\n  return nextState;\r\n}\r\n\r\nexport const _deleteImpl = (state: DatabaseState, schema: KonroSchema<any, any>, tableName: string, predicate: (record: KRecord) => boolean): [DatabaseState, KRecord[]] => {\r\n  const oldTableState = state[tableName];\r\n  if (!oldTableState) throw KonroError({ code: 'E200', tableName });\r\n  const tableSchema = schema.tables[tableName];\r\n  if (!tableSchema) throw KonroError({ code: 'E201', tableName });\r\n\r\n  const deletedAtColumn = Object.keys(tableSchema).find(key => tableSchema[key]?.options?._konro_sub_type === 'deletedAt');\r\n\r\n  // Soft delete path\r\n  if (deletedAtColumn) {\r\n    // Use update implementation for soft-delete. It will also handle `updatedAt`.\r\n    const [baseState, recordsToUpdate] = _updateImpl(\r\n      state,\r\n      schema,\r\n      tableName,\r\n      { [deletedAtColumn]: new Date() },\r\n      (record) => !record[deletedAtColumn] && predicate(record)\r\n    );\r\n\r\n    if (recordsToUpdate.length === 0) return [state, []];\r\n    const finalState = applyCascades(baseState, schema, tableName, recordsToUpdate);\r\n    // The returned records are the ones that were just soft-deleted from this table.\r\n    return [finalState, recordsToUpdate];\r\n  } \r\n  \r\n  // Hard delete path\r\n  const recordsToDelete: KRecord[] = [];\r\n  const keptRecords = oldTableState.records.filter(r => predicate(r) ? (recordsToDelete.push(r), false) : true);\r\n\r\n  if (recordsToDelete.length === 0) return [state, []];\r\n\r\n  const baseState = { ...state, [tableName]: { ...oldTableState, records: keptRecords } };\r\n  const finalState = applyCascades(baseState, schema, tableName, recordsToDelete);\r\n\r\n  return [finalState, recordsToDelete];\r\n};\r\n\r\n// --- VALIDATION ---\r\n\r\nconst validateRecord = (record: KRecord, tableSchema: Record<string, any>, existingRecords: KRecord[]): void => {\r\n  for (const [columnName, colDef] of Object.entries(tableSchema)) {\r\n    if (!colDef || typeof colDef !== 'object' || !('dataType' in colDef)) continue;\r\n\r\n    const value = record[columnName];\r\n    const options = colDef.options || {};\r\n\r\n    // Skip validation for undefined values (they should have defaults applied already)\r\n    if (value === undefined) continue;\r\n\r\n    // Validate unique constraint\r\n    if (options.unique && existingRecords.some(r => r[columnName] === value)) {\r\n      throw KonroValidationError({ code: 'E300', value: String(value), columnName });\r\n    }\r\n\r\n    // Validate string constraints\r\n    if (colDef.dataType === 'string' && typeof value === 'string') {\r\n      // Min length\r\n      if (options.min !== undefined && value.length < options.min) {\r\n        throw KonroValidationError({ code: 'E301', value, columnName, min: options.min });\r\n      }\r\n\r\n      // Max length\r\n      if (options.max !== undefined && value.length > options.max) {\r\n        throw KonroValidationError({ code: 'E302', value, columnName, max: options.max });\r\n      }\r\n\r\n      // Format validation\r\n      if (options.format === 'email' && !isValidEmail(value)) {\r\n        throw KonroValidationError({ code: 'E303', value, columnName });\r\n      }\r\n    }\r\n\r\n    // Validate number constraints\r\n    if (colDef.dataType === 'number' && typeof value === 'number') {\r\n      // Min value\r\n      if (options.min !== undefined && value < options.min) {\r\n        throw KonroValidationError({ code: 'E304', value, columnName, min: options.min });\r\n      }\r\n\r\n      // Max value\r\n      if (options.max !== undefined && value > options.max) {\r\n        throw KonroValidationError({ code: 'E305', value, columnName, max: options.max });\r\n      }\r\n    }\r\n  }\r\n};\r\n\r\nconst isValidEmail = (email: string): boolean => {\r\n  const emailRegex = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/;\r\n  return emailRegex.test(email);\r\n};"
+  src/schema.ts: >-
+    //
+
+    // Konro: The Type-Safe, Functional ORM for JSON/YAML
+
+    //
+
+    // ## Pillar I: The Recipe (Schema Definition)
+
+    //
+
+    // This file contains the core logic for defining a database schema. It is
+    designed to be
+
+    // both the runtime source of truth for validation and the static source of
+    truth for
+
+    // TypeScript types. By using phantom types and inference, we can create a
+    fully-typed
+
+    // `db` object from a single schema definition object, eliminating the need
+    for manual
+
+    // type declarations (`interface User { ... }`) and ensuring they never get
+    out of sync.
+
+    //
+
+
+    import type {
+      KonroSchema,
+      ColumnDefinition,
+      OneRelationDefinition,
+      ManyRelationDefinition,
+      AggregationDefinition
+    } from './types';
+
+
+    // --- SCHEMA BUILDER FUNCTION ---
+
+
+    /**
+     * Defines the structure, types, and relations of your database.
+     * This is the single source of truth for both runtime validation and static types.
+     *
+     * @param schemaDef The schema definition object.
+     * @returns A processed schema object with inferred types attached.
+     */
+    export const createSchema = <
+      const TDef extends {
+        tables: Record<string, Record<string, ColumnDefinition<any>>>;
+        relations?: (tables: TDef['tables']) => Record<string, Record<string, OneRelationDefinition | ManyRelationDefinition>>;
+      }
+    >(
+      schemaDef: TDef
+    ): KonroSchema<TDef['tables'], TDef['relations'] extends (...args: any) =>
+    any ? ReturnType<TDef['relations']> : {}> => { // eslint-disable-line
+      const relations = schemaDef.relations ? schemaDef.relations(schemaDef.tables) : {};
+      return {
+        tables: schemaDef.tables,
+        relations: relations as any, // Cast to bypass complex conditional type issue
+        // Types are applied via the return type annotation, these are just placeholders at runtime.
+        types: null as any,
+        base: {} as any,
+        create: {} as any,
+      };
+    };
+
+
+
+    // --- COLUMN DEFINITION HELPERS ---
+
+
+    const createColumn = <T>(dataType: ColumnDefinition<T>['dataType'], options:
+    object | undefined, tsType: T): ColumnDefinition<T> => ({
+      _type: 'column',
+      dataType,
+      options,
+      _tsType: tsType,
+    });
+
+
+    /** A managed, auto-incrementing integer primary key. This is the default
+    strategy. */
+
+    export const id = () => createColumn<number>('id', { unique: true,
+    _pk_strategy: 'auto-increment' }, 0);
+
+    /** A managed, universally unique identifier (UUID) primary key. Stored as a
+    string. */
+
+    export const uuid = () => createColumn<string>('id', { unique: true,
+    _pk_strategy: 'uuid' }, '');
+
+    /** A string column with optional validation. */
+
+    export const string = (options?: { unique?: boolean; default?: string | (()
+    => string); min?: number; max?: number; format?: 'email' | 'uuid' | 'url' })
+    => createColumn<string>('string', options, '');
+
+    /** A number column with optional validation. */
+
+    export const number = (options?: { unique?: boolean; default?: number | (()
+    => number); min?: number; max?: number; type?: 'integer' }) =>
+    createColumn<number>('number', options, 0);
+
+    /** A boolean column. */
+
+    export const boolean = (options?: { default?: boolean | (() => boolean) })
+    => createColumn<boolean>('boolean', options, false);
+
+    /** A generic date column. Consider using `createdAt` or `updatedAt` for
+    managed timestamps. */
+
+    export const date = (options?: { default?: Date | (() => Date) }) =>
+    createColumn<Date>('date', options, new Date());
+
+    /** A managed timestamp set when a record is created. */
+
+    export const createdAt = (): ColumnDefinition<Date> =>
+    createColumn<Date>('date', { _konro_sub_type: 'createdAt', default: () =>
+    new Date() }, new Date());
+
+    /** A managed timestamp set when a record is created and updated. */
+
+    export const updatedAt = (): ColumnDefinition<Date> =>
+    createColumn<Date>('date', { _konro_sub_type: 'updatedAt', default: () =>
+    new Date() }, new Date());
+
+    /** A managed, nullable timestamp for soft-deleting records. */
+
+    export const deletedAt = (): ColumnDefinition<Date | null> =>
+    createColumn<Date | null>('date', { _konro_sub_type: 'deletedAt', default:
+    null }, null);
+
+    /** A column for storing arbitrary JSON objects, with a generic for type
+    safety. */
+
+    export const object = <T extends Record<string, unknown>>(options?: {
+    default?: T | (() => T) }): ColumnDefinition<T> => ({ _type: 'column',
+    dataType: 'object', options });
+
+
+
+    // --- RELATIONSHIP DEFINITION HELPERS ---
+
+
+    /** Defines a `one-to-one` or `many-to-one` relationship. */
+
+    export const one = <T extends string>(targetTable: T, options: { on: string;
+    references: string; onDelete?: 'CASCADE' | 'SET NULL' }):
+    OneRelationDefinition & { targetTable: T } => ({
+      _type: 'relation',
+      relationType: 'one',
+      targetTable,
+      ...options,
+    });
+
+
+    /** Defines a `one-to-many` relationship. */
+
+    export const many = <T extends string>(targetTable: T, options: { on:
+    string; references: string; onDelete?: 'CASCADE' | 'SET NULL' }):
+    ManyRelationDefinition & { targetTable: T } => ({
+      _type: 'relation',
+      relationType: 'many',
+      targetTable,
+      ...options,
+    });
+
+
+
+    // --- AGGREGATION DEFINITION HELPERS ---
+
+
+    /** Aggregation to count records. */
+
+    export const count = (): AggregationDefinition => ({ _type: 'aggregation',
+    aggType: 'count' });
+
+    /** Aggregation to sum a numeric column. */
+
+    export const sum = (column: string): AggregationDefinition => ({ _type:
+    'aggregation', aggType: 'sum', column });
+
+    /** Aggregation to average a numeric column. */
+
+    export const avg = (column: string): AggregationDefinition => ({ _type:
+    'aggregation', aggType: 'avg', column });
+
+    /** Aggregation to find the minimum value in a numeric column. */
+
+    export const min = (column: string): AggregationDefinition => ({ _type:
+    'aggregation', aggType: 'min', column });
+
+    /** Aggregation to find the maximum value in a numeric column. */
+
+    export const max = (column: string): AggregationDefinition => ({ _type:
+    'aggregation', aggType: 'max', column });
+approved: true

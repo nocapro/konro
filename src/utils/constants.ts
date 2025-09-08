@@ -1,0 +1,1 @@
+export const TEMP_FILE_SUFFIX = '.tmp';

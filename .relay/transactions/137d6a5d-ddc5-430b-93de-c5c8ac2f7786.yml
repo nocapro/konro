@@ -1,0 +1,115 @@
+uuid: 137d6a5d-ddc5-430b-93de-c5c8ac2f7786
+projectId: konro
+createdAt: '2025-07-09T21:22:56.691Z'
+linesAdded: 23
+linesRemoved: 7
+gitCommitMsg: 'feat: Export more public types for improved DX'
+promptSummary: >-
+  Publish more public API surface, including the distinct InMemoryDbContext and
+  OnDemandDbContext.
+reasoning:
+  - >-
+    Based on your request to publish more of the public API surface, I will
+    update `src/index.ts` to export several more types from `src/types.ts`. This
+    will give consumers of your library better type support for advanced use
+    cases.
+  - '### Step-by-step reasoning:'
+  - >-
+    1.  **Analyze Request**: You want to expose more of the public API,
+    specifically mentioning `InMemoryDbContext` and `OnDemandDbContext`. While
+    these are already exported as types, the related query builder interfaces
+    and other key types are not, which limits the library's usability for
+    developers who need to type their variables.
+  - >-
+    2.  **Identify Missing Exports**: I've identified several important types in
+    `src/types.ts` that are essential for a good developer experience but are
+    not currently exported from the main `src/index.ts` entry point. These
+    include:
+  - >-
+    *   The fluent query builder interfaces (`QueryBuilder`,
+    `ChainedQueryBuilder`, `OnDemandQueryBuilder`, etc.).
+  - '*   The type for the `with` clause argument (`WithArgument`).'
+  - '*   Other useful types like `BaseRelationDefinition` and `Serializer`.'
+  - >-
+    3.  **Update `src/index.ts`**: I will modify `src/index.ts` to export these
+    additional types. I'll also restructure the `export type` block with
+    comments to group related types, improving readability and maintainability.
+    This change makes the library more robust for TypeScript users, allowing
+    them to explicitly type query builders and other parts of the API.
+  - '### Code Changes:'
+  - >-
+    I will apply the following change to `src/index.ts` to expand the public
+    type definitions.
+operations:
+  - type: write
+    path: src/index.ts
+    content: |-
+      <<<<<<< SEARCH
+      export type {
+        // Core Schema & DB Types
+        KonroSchema,
+        DbContext,
+        InMemoryDbContext,
+        OnDemandDbContext,
+        DatabaseState,
+        KRecord,
+        // Schema Definition Types
+        ColumnDefinition,
+        RelationDefinition,
+        OneRelationDefinition,
+        ManyRelationDefinition,
+        AggregationDefinition,
+        // Adapter & FS Types
+        StorageAdapter,
+        FileAdapterOptions,
+        FileStorageAdapter,
+        SingleFileStrategy,
+        MultiFileStrategy,
+        PerRecordStrategy,
+        FsProvider,
+      } from './types';
+      =======
+      export type {
+        // --- Core & Schema ---
+        KonroSchema,
+        DatabaseState,
+        KRecord,
+        // Schema Definition
+        ColumnDefinition,
+        RelationDefinition,
+        OneRelationDefinition,
+        ManyRelationDefinition,
+        BaseRelationDefinition,
+        AggregationDefinition,
+
+        // --- DB Contexts ---
+        DbContext,
+        InMemoryDbContext,
+        OnDemandDbContext,
+
+        // --- Fluent Query Builders ---
+        QueryBuilder,
+        ChainedQueryBuilder,
+        UpdateBuilder,
+        DeleteBuilder,
+        OnDemandQueryBuilder,
+        OnDemandChainedQueryBuilder,
+        OnDemandUpdateBuilder,
+        OnDemandDeleteBuilder,
+        WithArgument,
+
+        // --- Adapters & I/O ---
+        StorageAdapter,
+        FileStorageAdapter,
+        FileAdapterOptions,
+        SingleFileStrategy,
+        MultiFileStrategy,
+        PerRecordStrategy,
+        FsProvider,
+        Serializer,
+      } from './types';
+      >>>>>>> REPLACE
+    patchStrategy: multi-search-replace
+snapshot:
+  src/index.ts: "import { createDatabase } from './db';\r\nimport { createFileAdapter } from './adapter';\r\nimport { createSchema, id, uuid, string, number, boolean, date, createdAt, updatedAt, deletedAt, object, one, many, count, sum, avg, min, max } from './schema';\r\n\r\nexport type {\r\n  // Core Schema & DB Types\r\n  KonroSchema,\r\n  DbContext,\r\n  InMemoryDbContext,\r\n  OnDemandDbContext,\r\n  DatabaseState,\r\n  KRecord,\r\n  // Schema Definition Types\r\n  ColumnDefinition,\r\n  RelationDefinition,\r\n  OneRelationDefinition,\r\n  ManyRelationDefinition,\r\n  AggregationDefinition,\r\n  // Adapter & FS Types\r\n  StorageAdapter,\r\n  FileAdapterOptions,\r\n  FileStorageAdapter,\r\n  SingleFileStrategy,\r\n  MultiFileStrategy,\r\n  PerRecordStrategy,\r\n  FsProvider,\r\n} from './types';\r\n\r\n/**\r\n * The main Konro object, providing access to all core functionalities\r\n * for schema definition, database creation, and adapter configuration.\r\n */\r\nexport const konro = {\r\n  /**\r\n   * Defines the structure, types, and relations of your database.\r\n   * This is the single source of truth for both runtime validation and static types.\r\n   */\r\n  createSchema,\r\n  /**\r\n   * Creates the main `db` context, which is the primary interface for all\r\n   * database operations (read, write, query, etc.).\r\n   */\r\n  createDatabase,\r\n  /**\r\n   * Creates a file-based storage adapter for persisting the database state\r\n   * to a JSON or YAML file.\r\n   */\r\n  createFileAdapter,\r\n  // --- Column Definition Helpers ---\r\n  id,\r\n  uuid,\r\n  string,\r\n  number,\r\n  boolean,\r\n  date,\r\n  createdAt,\r\n  updatedAt,\r\n  deletedAt,\r\n  object,\r\n  // --- Relationship Definition Helpers ---\r\n  one,\r\n  many,\r\n  // --- Aggregation Definition Helpers ---\r\n  count,\r\n  sum,\r\n  avg,\r\n  min,\r\n  max,\r\n};\r\n"
+approved: true

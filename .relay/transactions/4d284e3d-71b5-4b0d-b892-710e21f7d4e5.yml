@@ -1,0 +1,1263 @@
+uuid: 4d284e3d-71b5-4b0d-b892-710e21f7d4e5
+projectId: konro
+createdAt: '2025-07-08T01:24:33.429Z'
+gitCommitMsg: >-
+  refactor(types): Introduce generic DatabaseState for type safety
+
+  This commit refactors the core `DatabaseState` type to be generic over the
+  database schema. This provides strong type-safety for all state-related
+  operations, resolving multiple 'possibly undefined' TypeScript errors in
+  tests.
+
+  - `src/schema.ts`: Exported `BaseModels` type for use in the new generic
+  state. - `src/types.ts`: `DatabaseState` is now `DatabaseState<S extends
+  KonroSchema>`, a conditional type that generates a strongly-typed object from
+  a schema or falls back to a weak type if no schema is provided. -
+  `src/operations.ts`: `createEmptyState` is now generic and returns a
+  strongly-typed state object. - `src/adapter.ts`: `StorageAdapter.read` method
+  and its implementations are now generic to handle the new state type. -
+  `src/db.ts`: `DbContext` and its factory `createDatabase` are updated to use
+  the generic `DatabaseState<S>`, bridging the gap between internal
+  implementations and the public, type-safe API. 
+promptSummary: >-
+  Fix TS errors in `test/integration/Adapters/Read.test.ts` related to 'possibly
+  undefined' properties on the database state object.
+reasoning:
+  - >-
+    I've identified that the root cause of the test failures is the weakly-typed
+    `DatabaseState`. It uses a string index signature, which means TypeScript
+    cannot guarantee that any specific table (like `users`) exists on a state
+    object, leading to "possibly 'undefined'" errors.
+  - >-
+    To fix this, I will introduce a series of changes to make the
+    `DatabaseState` type generic and dependent on the database schema. This will
+    provide strong type safety throughout the system.
+  - 'Here is my step-by-step plan:'
+  - >-
+    1.  **`src/schema.ts`**: I will export the `BaseModels` type helper. This is
+    crucial for correctly typing the records within our new generic
+    `DatabaseState`, as it represents the stored data structure without any
+    computed relations.
+  - >-
+    2.  **`src/types.ts`**: I will redefine `DatabaseState` as a generic
+    conditional type. When provided with a schema, it will generate a
+    strongly-typed state object with all table names as known keys. When used
+    without a schema, it will fall back to the old, weakly-typed structure for
+    compatibility with parts of the code that are schema-agnostic, like the base
+    adapter.
+  - >-
+    3.  **`src/operations.ts`**: I'll make the `createEmptyState` function
+    generic. It will now accept a schema and return a strongly-typed
+    `DatabaseState<S>`. I will need to use a type assertion here, as I'm
+    dynamically building an object, and this is a standard TypeScript pattern to
+    inform the compiler of the final object's shape which it cannot infer on its
+    own.
+  - >-
+    4.  **`src/adapter.ts`**: I will update the `StorageAdapter` interface,
+    making the `read` method generic to return a strongly-typed state. The
+    file-based adapter implementations will be updated accordingly. The `write`
+    method will accept a union of the generic and non-generic `DatabaseState`
+    for wider compatibility.
+  - >-
+    5.  **`src/db.ts`**: The `DbContext` interface will be updated to use the
+    new generic `DatabaseState<S>` for all its methods. In the `createDatabase`
+    factory, I will introduce type assertions where the internal, weakly-typed
+    implementation functions (`_insertImpl`, etc.) are called. These assertions
+    act as a necessary bridge between the internal logic and the strongly-typed
+    public API, ensuring the rest of the application benefits from the improved
+    type safety.
+  - >-
+    These changes will resolve the "possibly 'undefined'" errors in
+    `test/integration/Adapters/Read.test.ts` by ensuring that
+    `db.createEmptyState()` and `db.read()` return objects whose shapes are
+    fully known to TypeScript.
+operations:
+  - type: write
+    path: src/schema.ts
+    content: >-
+      <<<<<<< SEARCH
+
+      type BaseModels<TTables extends Record<string, Record<string,
+      ColumnDefinition<any>>>> = {
+
+      =======
+
+      export type BaseModels<TTables extends Record<string, Record<string,
+      ColumnDefinition<any>>>> = {
+
+      >>>>>>> REPLACE
+    patchStrategy: multi-search-replace
+  - type: write
+    path: src/types.ts
+    content: >-
+      import type { BaseModels, KonroSchema } from './schema';
+
+
+      /**
+       * A generic representation of a single record within a table.
+       * It uses `unknown` for values to enforce type-safe access.
+       */
+      export type KRecord = Record<string, unknown>;
+
+
+      /**
+       * The in-memory representation of the entire database. It is a plain, immutable object.
+       */
+      export type DatabaseState<S extends KonroSchema<any, any> | unknown =
+      unknown> = S extends KonroSchema<any, any>
+        ? {
+            [TableName in keyof S['tables']]: {
+              records: BaseModels<S['tables']>[TableName][];
+              meta: {
+                lastId: number;
+              };
+            };
+          }
+        : {
+            [tableName: string]: {
+              records: KRecord[];
+              meta: {
+                lastId: number;
+              };
+            };
+          };
+    patchStrategy: replace
+  - type: write
+    path: src/operations.ts
+    content: >-
+      --- src/operations.ts
+
+      +++ src/operations.ts
+
+      @@ -5,11 +5,12 @@
+       
+       
+       /** Creates a pristine, empty database state from a schema. */
+      -export const createEmptyState = (schema: KonroSchema<any, any>):
+      DatabaseState => {
+
+      -  const state: DatabaseState = {};
+
+      +export const createEmptyState = <S extends KonroSchema<any, any>>(schema:
+      S): DatabaseState<S> => {
+
+      +  const state = {} as DatabaseState<S>;
+         for (const tableName in schema.tables) {
+      -    state[tableName] = { records: [], meta: { lastId: 0 } };
+
+      +    // This is a controlled cast, safe because we are iterating over the
+      schema's tables.
+
+      +    (state as any)[tableName] = { records: [], meta: { lastId: 0 } };
+         }
+         return state;
+       };
+    patchStrategy: new-unified
+  - type: write
+    path: src/adapter.ts
+    content: >-
+      --- src/adapter.ts
+
+      +++ src/adapter.ts
+
+      @@ -5,8 +5,8 @@
+       import { readFile, writeAtomic } from './utils/fs.util';
+       import { TEMP_FILE_SUFFIX } from './utils/constants';
+       
+       export interface StorageAdapter {
+      -  read(schema: KonroSchema<any, any>): Promise<DatabaseState>;
+
+      -  write(state: DatabaseState): Promise<void>;
+
+      +  read<S extends KonroSchema<any, any>>(schema: S):
+      Promise<DatabaseState<S>>;
+
+      +  write(state: DatabaseState<any>): Promise<void>;
+       }
+       
+       type SingleFileStrategy = { single: { filepath: string }; multi?: never; };
+      @@ -19,25 +19,26 @@
+         const serializer = getSerializer(options.format);
+         const fileExtension = `.${options.format}`;
+       
+      -  const readSingle = async (schema: KonroSchema<any, any>):
+      Promise<DatabaseState> => {
+
+      +  const readSingle = async <S extends KonroSchema<any, any>>(schema: S):
+      Promise<DatabaseState<S>> => {
+           const filepath = options.single!.filepath;
+           const data = await readFile(filepath);
+      -    return data ? serializer.parse<DatabaseState>(data) :
+      createEmptyState(schema);
+
+      +    return data ? serializer.parse<DatabaseState<S>>(data) :
+      createEmptyState(schema);
+         };
+       
+      -  const writeSingle = async (state: DatabaseState): Promise<void> => {
+
+      +  const writeSingle = async (state: DatabaseState<any>): Promise<void> =>
+      {
+           const filepath = options.single!.filepath;
+           await writeAtomic(filepath, serializer.stringify(state));
+         };
+         
+      -  const readMulti = async (schema: KonroSchema<any, any>):
+      Promise<DatabaseState> => {
+
+      +  const readMulti = async <S extends KonroSchema<any, any>>(schema: S):
+      Promise<DatabaseState<S>> => {
+           const dir = options.multi!.dir;
+           const state = createEmptyState(schema);
+           await fs.mkdir(dir, { recursive: true });
+       
+           for (const tableName in schema.tables) {
+             const filepath = path.join(dir, `${tableName}${fileExtension}`);
+             const data = await readFile(filepath);
+             if (data) {
+      -        state[tableName] = serializer.parse(data);
+
+      +        // This is a controlled cast, safe because we are iterating over
+      the schema's tables.
+
+      +        (state as any)[tableName] = serializer.parse(data);
+             }
+           }
+           return state;
+         };
+         
+      -  const writeMulti = async (state: DatabaseState): Promise<void> => {
+
+      +  const writeMulti = async (state: DatabaseState<any>): Promise<void> =>
+      {
+           const dir = options.multi!.dir;
+           await fs.mkdir(dir, { recursive: true });
+    patchStrategy: new-unified
+  - type: write
+    path: src/db.ts
+    content: >-
+      --- src/db.ts
+
+      +++ src/db.ts
+
+      @@ -37,18 +37,18 @@
+       export interface DbContext<S extends KonroSchema<any, any>> {
+         schema: S;
+         adapter: StorageAdapter;
+      -  read(): Promise<DatabaseState>;
+
+      -  write(state: DatabaseState): Promise<void>;
+
+      -  createEmptyState(): DatabaseState;
+
+      +  read(): Promise<DatabaseState<S>>;
+
+      +  write(state: DatabaseState<S>): Promise<void>;
+
+      +  createEmptyState(): DatabaseState<S>;
+       
+      -  query(state: DatabaseState): QueryBuilder<S>;
+
+      -  insert<T extends keyof S['types']>(state: DatabaseState, tableName: T,
+      values: S['create'][T]): [DatabaseState, S['types'][T]];
+
+      -  insert<T extends keyof S['types']>(state: DatabaseState, tableName: T,
+      values: Readonly<S['create'][T]>[]): [DatabaseState, S['types'][T][]];
+
+      -  update<T extends keyof S['tables']>(state: DatabaseState, tableName:
+      T): UpdateBuilder<S['types'][T]>;
+
+      -  delete<T extends keyof S['tables']>(state: DatabaseState, tableName:
+      T): DeleteBuilder<S['types'][T]>;
+
+      +  query(state: DatabaseState<S>): QueryBuilder<S>;
+
+      +  insert<T extends keyof S['types']>(state: DatabaseState<S>, tableName:
+      T, values: S['create'][T]): [DatabaseState<S>, S['types'][T]];
+
+      +  insert<T extends keyof S['types']>(state: DatabaseState<S>, tableName:
+      T, values: Readonly<S['create'][T]>[]): [DatabaseState<S>,
+      S['types'][T][]];
+
+      +  update<T extends keyof S['tables']>(state: DatabaseState<S>, tableName:
+      T): UpdateBuilder<S['types'][T]>;
+
+      +  delete<T extends keyof S['tables']>(state: DatabaseState<S>, tableName:
+      T): DeleteBuilder<S['types'][T]>;
+       }
+       
+       export const createDatabase = <S extends KonroSchema<any, any>>(options: { schema: S, adapter: StorageAdapter }): DbContext<S> => {
+      @@ -62,28 +62,28 @@
+           createEmptyState: () => createEmptyStateImpl(schema),
+       
+           insert: (<T extends keyof S['types']>(
+      -      state: DatabaseState,
+
+      +      state: DatabaseState<S>,
+             tableName: T,
+             values: S['create'][T] | Readonly<S['create'][T]>[]
+      -    ): [DatabaseState, S['types'][T] | S['types'][T][]] => {
+
+      +    ): [DatabaseState<S>, S['types'][T] | S['types'][T][]] => {
+             const valsArray = Array.isArray(values) ? values : [values];
+      -      const [newState, inserted] = _insertImpl(state, schema, tableName
+      as string, valsArray as KRecord[]);
+
+      +      const [newState, inserted] = _insertImpl(state as DatabaseState,
+      schema, tableName as string, valsArray as KRecord[]);
+             const result = Array.isArray(values) ? inserted : inserted[0];
+      -      return [newState, result] as [DatabaseState, S['types'][T] |
+      S['types'][T][]];
+
+      +      return [newState as DatabaseState<S>, result] as [DatabaseState<S>,
+      S['types'][T] | S['types'][T][]];
+           }) as {
+      -      <T extends keyof S['types']>(state: DatabaseState, tableName: T,
+      values: S['create'][T]): [DatabaseState, S['types'][T]];
+
+      -      <T extends keyof S['types']>(state: DatabaseState, tableName: T,
+      values: Readonly<S['create'][T]>[]): [DatabaseState, S['types'][T][]];
+
+      +      <T extends keyof S['types']>(state: DatabaseState<S>, tableName: T,
+      values: S['create'][T]): [DatabaseState<S>, S['types'][T]];
+
+      +      <T extends keyof S['types']>(state: DatabaseState<S>, tableName: T,
+      values: Readonly<S['create'][T]>[]): [DatabaseState<S>, S['types'][T][]];
+           },
+       
+      -    query: (state: DatabaseState): QueryBuilder<S> => ({
+
+      +    query: (state: DatabaseState<S>): QueryBuilder<S> => ({
+             from: <T extends keyof S['tables']>(tableName: T): ChainedQueryBuilder<S['types'][T]> => {
+               const descriptor: QueryDescriptor = { tableName: tableName as string };
+       
+               const builder: ChainedQueryBuilder<S['types'][T]> = {
+                 select: (fields) => {
+                   descriptor.select = fields;
+                   return builder;
+                 },
+                 where: (predicate) => {
+      -            descriptor.where = normalizePredicate(predicate);
+
+      +            descriptor.where = normalizePredicate(predicate as (record:
+      KRecord) => boolean);
+                   return builder;
+                 },
+                 with: (relations) => {
+      @@ -98,28 +98,28 @@
+                   descriptor.offset = count;
+                   return builder;
+                 },
+      -          all: async (): Promise<S['types'][T][]> => _queryImpl(state,
+      schema, descriptor) as any,
+
+      -          first: async (): Promise<S['types'][T] | null> =>
+      (_queryImpl(state, schema, { ...descriptor, limit: 1 })[0] ?? null) as
+      any,
+
+      +          all: async (): Promise<S['types'][T][]> => _queryImpl(state as
+      DatabaseState, schema, descriptor) as any,
+
+      +          first: async (): Promise<S['types'][T] | null> =>
+      (_queryImpl(state as DatabaseState, schema, { ...descriptor, limit: 1
+      })[0] ?? null) as any,
+                 aggregate: async <TAggs extends Record<string, AggregationDefinition>>(aggregations: TAggs): Promise<{ [K in keyof TAggs]: number | null }> => {
+                   const aggDescriptor: AggregationDescriptor = { ...descriptor, aggregations };
+      -            return _aggregateImpl(state, schema, aggDescriptor) as { [K
+      in keyof TAggs]: number | null };
+
+      +            return _aggregateImpl(state as DatabaseState, schema,
+      aggDescriptor) as { [K in keyof TAggs]: number | null };
+                 },
+               };
+               return builder;
+             },
+           }),
+       
+      -    update: <T extends keyof S['tables']>(state: DatabaseState,
+      tableName: T): UpdateBuilder<S['types'][T]> => ({
+
+      +    update: <T extends keyof S['tables']>(state: DatabaseState<S>,
+      tableName: T): UpdateBuilder<S['types'][T]> => ({
+             set: (data) => ({
+               where: async (predicate) => {
+      -          const [newState, updatedRecords] = _updateImpl(state, schema,
+      tableName as string, data as Partial<KRecord>,
+      normalizePredicate(predicate));
+
+      -          return [newState, updatedRecords as S['types'][T][]];
+
+      +          const [newState, updatedRecords] = _updateImpl(state as
+      DatabaseState, schema, tableName as string, data as Partial<KRecord>,
+      normalizePredicate(predicate as (record: KRecord) => boolean));
+
+      +          return [newState as DatabaseState<S>, updatedRecords as
+      S['types'][T][]];
+               },
+             }),
+           }),
+       
+      -    delete: <T extends keyof S['tables']>(state: DatabaseState,
+      tableName: T): DeleteBuilder<S['types'][T]> => ({
+
+      +    delete: <T extends keyof S['tables']>(state: DatabaseState<S>,
+      tableName: T): DeleteBuilder<S['types'][T]> => ({
+             where: async (predicate) => {
+      -        const [newState, deletedRecords] = _deleteImpl(state, tableName
+      as string, normalizePredicate(predicate));
+
+      -        return [newState, deletedRecords as S['types'][T][]];
+
+      +        const [newState, deletedRecords] = _deleteImpl(state as
+      DatabaseState, tableName as string, normalizePredicate(predicate as
+      (record: KRecord) => boolean));
+
+      +        return [newState as DatabaseState<S>, deletedRecords as
+      S['types'][T][]];
+             },
+           }),
+         };
+    patchStrategy: new-unified
+snapshot:
+  src/schema.ts: >
+    // --- TYPE UTILITIES ---
+
+    type Pretty<T> = { [K in keyof T]: T[K] } & {};
+
+
+    // --- CORE DEFINITIONS ---
+
+
+    export interface ColumnOptions<T> {
+      unique?: boolean;
+      default?: T | (() => T);
+    }
+
+
+    export interface StringColumnOptions extends ColumnOptions<string> {
+      min?: number;
+      max?: number;
+      format?: 'email' | 'uuid' | 'url';
+    }
+
+
+    export interface NumberColumnOptions extends ColumnOptions<number> {
+      min?: number;
+      max?: number;
+      type?: 'integer';
+    }
+
+
+    export interface ColumnDefinition<T> {
+      _type: 'column';
+      dataType: 'id' | 'string' | 'number' | 'boolean' | 'date' | 'object';
+      options?: ColumnOptions<T>;
+      _tsType: T; // For TypeScript inference only
+    }
+
+
+    export interface StringColumnDefinition extends ColumnDefinition<string> {
+      dataType: 'string';
+      options?: StringColumnOptions;
+    }
+
+
+    export interface NumberColumnDefinition extends ColumnDefinition<number> {
+      dataType: 'number';
+      options?: NumberColumnOptions;
+    }
+
+
+    export interface RelationDefinition {
+      _type: 'relation';
+      relationType: 'one' | 'many';
+      targetTable: string;
+      on: string;
+      references: string;
+    }
+
+
+    export interface AggregationDefinition {
+      _type: 'aggregation';
+      aggType: 'sum' | 'avg' | 'min' | 'max' | 'count';
+      column?: string;
+    }
+
+
+    // --- TYPE INFERENCE MAGIC ---
+
+
+    // Find keys for ID columns
+
+    type IdKey<TTableDef extends Record<string, ColumnDefinition<any>>> = {
+        [K in keyof TTableDef]: TTableDef[K]['dataType'] extends 'id' ? K : never;
+    }[keyof TTableDef];
+
+
+    // Find keys for columns with defaults
+
+    type WithDefaultKey<TTableDef extends Record<string, ColumnDefinition<any>>>
+    = {
+        [K in keyof TTableDef]: TTableDef[K]['options'] extends { default: any } ? K : never;
+    }[keyof TTableDef];
+
+
+    type CreateModel<TTableDef extends Record<string, ColumnDefinition<any>>> =
+    Pretty<
+        // Fields with defaults are optional
+        Partial<{ [K in WithDefaultKey<TTableDef>]: TTableDef[K]['_tsType'] }> &
+        // All other fields, except the ID and defaults, are required
+        { [K in Exclude<keyof TTableDef, IdKey<TTableDef> | WithDefaultKey<TTableDef>>]: TTableDef[K]['_tsType'] }
+    >;
+
+
+    type BaseModels<TTables extends Record<string, Record<string,
+    ColumnDefinition<any>>>> = {
+      [TableName in keyof TTables]: {
+        [ColumnName in keyof TTables[TableName]]: TTables[TableName][ColumnName]['_tsType'];
+      };
+    };
+
+
+    type CreateModels<TTables extends Record<string, Record<string,
+    ColumnDefinition<any>>>> = {
+        [TableName in keyof TTables]: CreateModel<TTables[TableName]>
+    };
+
+
+    type WithRelations<
+      TBaseModels extends Record<string, any>,
+      TRelations extends Record<string, Record<string, RelationDefinition>>
+    > = {
+        [TableName in keyof TBaseModels]: TBaseModels[TableName] & (TableName extends keyof TRelations ? {
+          [RelationName in keyof TRelations[TableName]]?: TRelations[TableName][RelationName]['relationType'] extends 'one'
+          ? TBaseModels[TRelations[TableName][RelationName]['targetTable']] | null
+          : TBaseModels[TRelations[TableName][RelationName]['targetTable']][];
+        } : {});
+      };
+
+    export interface KonroSchema<
+      TTables extends Record<string, Record<string, ColumnDefinition<any>>>,
+      TRelations extends Record<string, Record<string, RelationDefinition>>
+    > {
+      tables: TTables;
+      relations: TRelations;
+      types: Pretty<WithRelations<BaseModels<TTables>, TRelations>>;
+      create: CreateModels<TTables>;
+    }
+
+
+    // --- SCHEMA HELPERS ---
+
+
+    export const id = (): ColumnDefinition<number> => ({ _type: 'column',
+    dataType: 'id', options: { unique: true }, _tsType: 0 });
+
+    export const string = (options?: StringColumnOptions):
+    StringColumnDefinition => ({ _type: 'column', dataType: 'string', options,
+    _tsType: '' });
+
+    export const number = (options?: NumberColumnOptions):
+    NumberColumnDefinition => ({ _type: 'column', dataType: 'number', options,
+    _tsType: 0 });
+
+    export const boolean = (options?: ColumnOptions<boolean>):
+    ColumnDefinition<boolean> => ({ _type: 'column', dataType: 'boolean',
+    options, _tsType: false });
+
+    export const date = (options?: ColumnOptions<Date>): ColumnDefinition<Date>
+    => ({ _type: 'column', dataType: 'date', options, _tsType: new Date() });
+
+    export const object = <T extends Record<string, any>>(options?:
+    ColumnOptions<T>): ColumnDefinition<T> => ({ _type: 'column', dataType:
+    'object', options, _tsType: undefined! });
+
+
+    export const one = (targetTable: string, options: { on: string; references:
+    string }): RelationDefinition => ({ _type: 'relation', relationType: 'one',
+    targetTable, ...options });
+
+    export const many = (targetTable: string, options: { on: string; references:
+    string }): RelationDefinition => ({ _type: 'relation', relationType: 'many',
+    targetTable, ...options });
+
+
+
+    // --- AGGREGATION HELPERS ---
+
+
+    export const count = (): AggregationDefinition => ({ _type: 'aggregation',
+    aggType: 'count' });
+
+    export const sum = (column: string): AggregationDefinition => ({ _type:
+    'aggregation', aggType: 'sum', column });
+
+    export const avg = (column: string): AggregationDefinition => ({ _type:
+    'aggregation', aggType: 'avg', column });
+
+    export const min = (column: string): AggregationDefinition => ({ _type:
+    'aggregation', aggType: 'min', column });
+
+    export const max = (column: string): AggregationDefinition => ({ _type:
+    'aggregation', aggType: 'max', column });
+
+    // --- SCHEMA BUILDER ---
+
+
+    type SchemaInputDef<T> = {
+      tables: T;
+      relations?: (tables: T) => Record<string, Record<string, RelationDefinition>>;
+    };
+
+
+    export function createSchema<const TDef extends
+    SchemaInputDef<any>>(definition: TDef) {
+      const relations = definition.relations ? definition.relations(definition.tables) : {};
+      return {
+        tables: definition.tables,
+        relations,
+        types: null as any, // This is a runtime placeholder for the inferred types
+        create: null as any, // This is a runtime placeholder for the create types
+      } as KonroSchema<
+        TDef['tables'],
+        TDef['relations'] extends (...args: any) => any ? ReturnType<TDef['relations']> : {}
+      >;
+    }
+  src/types.ts: |-
+    /**
+     * The in-memory representation of the entire database. It is a plain, immutable object.
+     */
+    export type DatabaseState = {
+      [tableName: string]: {
+        records: KRecord[];
+        meta: {
+          lastId: number;
+        };
+      };
+    };
+
+    /**
+     * A generic representation of a single record within a table.
+     * It uses `unknown` for values to enforce type-safe access.
+     */
+    export type KRecord = Record<string, unknown>;
+  src/operations.ts: >
+    import { DatabaseState, KRecord } from './types';
+
+    import { KonroSchema, RelationDefinition, ColumnDefinition,
+    AggregationDefinition } from './schema';
+
+    import { KonroError, KonroValidationError } from './utils/error.util';
+
+
+    // --- HELPERS ---
+
+
+
+    /** Creates a pristine, empty database state from a schema. */
+
+    export const createEmptyState = (schema: KonroSchema<any, any>):
+    DatabaseState => {
+      const state: DatabaseState = {};
+      for (const tableName in schema.tables) {
+        state[tableName] = { records: [], meta: { lastId: 0 } };
+      }
+      return state;
+    };
+
+
+    // --- QUERY ---
+
+
+    export interface QueryDescriptor {
+      tableName: string;
+      select?: Record<string, ColumnDefinition<unknown> | RelationDefinition>;
+      where?: (record: KRecord) => boolean;
+      with?: Record<string, boolean | { select?: Record<string, ColumnDefinition<unknown>>; where?: (record: KRecord) => boolean }>;
+      limit?: number;
+      offset?: number;
+    }
+
+
+    export interface AggregationDescriptor extends QueryDescriptor {
+      aggregations: Record<string, AggregationDefinition>;
+    }
+
+
+    export const _queryImpl = <S extends KonroSchema<any, any>>(state:
+    DatabaseState, schema: S, descriptor: QueryDescriptor): KRecord[] => {
+      const tableState = state[descriptor.tableName];
+      if (!tableState) return [];
+
+      // 1. Filter
+      let results = descriptor.where ? tableState.records.filter(descriptor.where) : [...tableState.records];
+
+      // 2. Eager load relations (`with`)
+      if (descriptor.with) {
+        results = structuredClone(results); // Clone to avoid mutating state
+        for (const record of results) {
+          for (const relationName in descriptor.with) {
+            const relationDef = schema.relations[descriptor.tableName]?.[relationName];
+            if (!relationDef) continue;
+
+            const relatedRecords = findRelatedRecords(state, record, relationDef);
+
+            const withOpts = descriptor.with[relationName];
+            const nestedWhere = typeof withOpts === 'object' ? withOpts.where : undefined;
+            const nestedSelect = typeof withOpts === 'object' ? withOpts.select : undefined;
+
+            let processedRecords = nestedWhere ? relatedRecords.filter(nestedWhere) : relatedRecords;
+
+            if (nestedSelect) {
+              const targetTableSchema = schema.tables[relationDef.targetTable];
+              if (!targetTableSchema) throw KonroError(`Schema for table "${relationDef.targetTable}" not found.`);
+
+              processedRecords = processedRecords.map(rec => {
+                const newRec: KRecord = {};
+                for (const outputKey in nestedSelect) {
+                  const def = nestedSelect[outputKey];
+                  if (!def) continue;
+                  // nested with() does not support selecting relations, only columns, as per spec.
+                  if (def._type === 'column') {
+                    const colName = Object.keys(targetTableSchema).find(key => targetTableSchema[key] === def);
+                    if (colName && rec.hasOwnProperty(colName)) {
+                      newRec[outputKey] = rec[colName];
+                    }
+                  }
+                }
+                return newRec;
+              });
+            }
+            if (relationDef.relationType === 'one') {
+              record[relationName] = processedRecords[0] ?? null;
+            } else {
+              record[relationName] = processedRecords;
+            }
+          }
+        }
+      }
+
+      // 3. Paginate
+      const offset = descriptor.offset ?? 0;
+      const limit = descriptor.limit ?? results.length;
+      let paginatedResults = results.slice(offset, offset + limit);
+
+      // 4. Select Fields
+      if (descriptor.select) {
+        const tableSchema = schema.tables[descriptor.tableName];
+        const relationsSchema = schema.relations[descriptor.tableName] ?? {};
+        if (!tableSchema) throw KonroError(`Schema for table "${descriptor.tableName}" not found.`);
+
+        paginatedResults = paginatedResults.map(rec => {
+          const newRec: KRecord = {};
+          for (const outputKey in descriptor.select!) {
+            const def = descriptor.select![outputKey];
+            if (!def) continue;
+            if (def._type === 'column') {
+              const colName = Object.keys(tableSchema).find(key => tableSchema[key] === def);
+              if (colName && rec.hasOwnProperty(colName)) {
+                newRec[outputKey] = rec[colName];
+              }
+            } else if (def._type === 'relation') {
+              const relName = Object.keys(relationsSchema).find(key => relationsSchema[key] === def);
+              if (relName && rec.hasOwnProperty(relName)) {
+                newRec[outputKey] = rec[relName];
+              }
+            }
+          }
+          return newRec;
+        });
+      }
+
+      return paginatedResults;
+    };
+
+
+    const findRelatedRecords = (state: DatabaseState, record: KRecord,
+    relationDef: RelationDefinition) => {
+      const foreignKey = record[relationDef.on];
+      const targetTable = state[relationDef.targetTable];
+
+      if (foreignKey === undefined || !targetTable) return [];
+
+      // one-to-many: 'on' is PK on current table, 'references' is FK on target
+      if (relationDef.relationType === 'many') {
+        return targetTable.records.filter(r => r[relationDef.references] === foreignKey);
+      }
+
+      // many-to-one: 'on' is FK on current table, 'references' is PK on target
+      if (relationDef.relationType === 'one') {
+        return targetTable.records.filter(r => r[relationDef.references] === foreignKey);
+      }
+
+      return [];
+    };
+
+
+    // --- AGGREGATION ---
+
+
+    export const _aggregateImpl = <S extends KonroSchema<any, any>>(
+      state: DatabaseState,
+      _schema: S, // Not used but keep for API consistency
+      descriptor: AggregationDescriptor
+    ): Record<string, number | null> => {
+      const tableState = state[descriptor.tableName];
+      if (!tableState) return {};
+
+      const filteredRecords = descriptor.where ? tableState.records.filter(descriptor.where) : [...tableState.records];
+      const results: Record<string, number | null> = {};
+
+      for (const resultKey in descriptor.aggregations) {
+        const aggDef = descriptor.aggregations[resultKey];
+        if (!aggDef) continue;
+
+        if (aggDef.aggType === 'count') {
+          results[resultKey] = filteredRecords.length;
+          continue;
+        }
+
+        if (!aggDef.column) {
+          throw KonroError(`Aggregation '${aggDef.aggType}' requires a column.`);
+        }
+        const column = aggDef.column;
+
+        const values = filteredRecords.map(r => r[column]).filter(v => typeof v === 'number') as number[];
+
+        if (values.length === 0) {
+          if (aggDef.aggType === 'sum') {
+            results[resultKey] = 0; // sum of empty set is 0
+          } else {
+            results[resultKey] = null; // avg, min, max of empty set is null
+          }
+          continue;
+        }
+
+        switch (aggDef.aggType) {
+          case 'sum':
+            results[resultKey] = values.reduce((sum, val) => sum + val, 0);
+            break;
+          case 'avg':
+            results[resultKey] = values.reduce((sum, val) => sum + val, 0) / values.length;
+            break;
+          case 'min':
+            results[resultKey] = Math.min(...values);
+            break;
+          case 'max':
+            results[resultKey] = Math.max(...values);
+            break;
+        }
+      }
+      return results;
+    };
+
+
+    // --- INSERT ---
+
+
+    export const _insertImpl = <S extends KonroSchema<any, any>>(state:
+    DatabaseState, schema: S, tableName: string, values: KRecord[]):
+    [DatabaseState, KRecord[]] => {
+      const newState = structuredClone(state);
+      const tableState = newState[tableName];
+      if (!tableState) throw KonroError(`Table "${tableName}" does not exist in the database state.`);
+      const tableSchema = schema.tables[tableName];
+      if (!tableSchema) throw KonroError(`Schema for table "${tableName}" not found.`);
+      const insertedRecords: KRecord[] = [];
+
+      for (const value of values) {
+        const newRecord: KRecord = { ...value };
+        // Handle IDs and defaults
+        for (const colName in tableSchema) {
+          const colDef = tableSchema[colName];
+          if (colDef.dataType === 'id') {
+            tableState.meta.lastId++;
+            newRecord[colName] = tableState.meta.lastId;
+          }
+          if (newRecord[colName] === undefined && colDef.options?.default !== undefined) {
+            newRecord[colName] = typeof colDef.options.default === 'function' ? colDef.options.default() : colDef.options.default;
+          }
+        }
+
+        // Validate the record before inserting
+        validateRecord(newRecord, tableSchema, tableState.records);
+
+        tableState.records.push(newRecord);
+        insertedRecords.push(newRecord);
+      }
+
+      return [newState, insertedRecords];
+    };
+
+
+    // --- UPDATE ---
+
+
+    export const _updateImpl = <S extends KonroSchema<any, any>>(state:
+    DatabaseState, schema: S, tableName: string, data: Partial<KRecord>,
+    predicate: (record: KRecord) => boolean): [DatabaseState, KRecord[]] => {
+      const newState = structuredClone(state);
+      const tableState = newState[tableName];
+      if (!tableState) throw KonroError(`Table "${tableName}" does not exist in the database state.`);
+
+      const tableSchema = schema.tables[tableName];
+      if (!tableSchema) {
+        throw KonroError(`Schema for table "${tableName}" not found.`);
+      }
+
+      const updatedRecords: KRecord[] = [];
+
+      const updateData = { ...data };
+      // Find the ID column from the schema and prevent it from being updated.
+      const idColumn = Object.entries(tableSchema).find(([, colDef]) => {
+        return colDef && typeof colDef === 'object' && '_type' in colDef && colDef._type === 'column' && 'dataType' in colDef && colDef.dataType === 'id';
+      })?.[0];
+      if (idColumn && updateData[idColumn] !== undefined) {
+        delete updateData[idColumn];
+      }
+
+      tableState.records = tableState.records.map(record => {
+        if (predicate(record)) {
+          const updatedRecord = { ...record, ...updateData };
+
+          // Validate the updated record, excluding current record from unique checks
+          const otherRecords = tableState.records.filter(r => r !== record);
+          validateRecord(updatedRecord, tableSchema, otherRecords);
+
+          updatedRecords.push(updatedRecord);
+          return updatedRecord;
+        }
+        return record;
+      });
+
+      return [newState, updatedRecords];
+    };
+
+
+
+    // --- DELETE ---
+
+
+    export const _deleteImpl = (state: DatabaseState, tableName: string,
+    predicate: (record: KRecord) => boolean): [DatabaseState, KRecord[]] => {
+      const newState = structuredClone(state);
+      const tableState = newState[tableName];
+      if (!tableState) throw KonroError(`Table "${tableName}" does not exist in the database state.`);
+      const deletedRecords: KRecord[] = [];
+
+      const keptRecords = tableState.records.filter(record => {
+        if (predicate(record)) {
+          deletedRecords.push(record);
+          return false;
+        }
+        return true;
+      });
+
+      tableState.records = keptRecords;
+      return [newState, deletedRecords];
+    };
+
+
+    // --- VALIDATION ---
+
+
+    const validateRecord = (record: KRecord, tableSchema: Record<string, any>,
+    existingRecords: KRecord[]): void => {
+      for (const [columnName, colDef] of Object.entries(tableSchema)) {
+        if (!colDef || typeof colDef !== 'object' || !('dataType' in colDef)) continue;
+
+        const value = record[columnName];
+        const options = colDef.options || {};
+
+        // Skip validation for undefined values (they should have defaults applied already)
+        if (value === undefined) continue;
+
+        // Validate unique constraint
+        if (options.unique && existingRecords.some(r => r[columnName] === value)) {
+          throw KonroValidationError(`Value '${String(value)}' for column '${columnName}' must be unique`);
+        }
+
+        // Validate string constraints
+        if (colDef.dataType === 'string' && typeof value === 'string') {
+          // Min length
+          if (options.min !== undefined && value.length < options.min) {
+            throw KonroValidationError(`String '${value}' for column '${columnName}' is too short (min: ${options.min})`);
+          }
+
+          // Max length
+          if (options.max !== undefined && value.length > options.max) {
+            throw KonroValidationError(`String '${value}' for column '${columnName}' is too long (max: ${options.max})`);
+          }
+
+          // Format validation
+          if (options.format === 'email' && !isValidEmail(value)) {
+            throw KonroValidationError(`Value '${value}' for column '${columnName}' is not a valid email`);
+          }
+        }
+
+        // Validate number constraints
+        if (colDef.dataType === 'number' && typeof value === 'number') {
+          // Min value
+          if (options.min !== undefined && value < options.min) {
+            throw KonroValidationError(`Number ${value} for column '${columnName}' is too small (min: ${options.min})`);
+          }
+
+          // Max value
+          if (options.max !== undefined && value > options.max) {
+            throw KonroValidationError(`Number ${value} for column '${columnName}' is too large (max: ${options.max})`);
+          }
+        }
+      }
+    };
+
+
+    const isValidEmail = (email: string): boolean => {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      return emailRegex.test(email);
+    };
+  src/adapter.ts: >-
+    import { promises as fs } from 'fs';
+
+    import path from 'path';
+
+    import { DatabaseState } from './types';
+
+    import { createEmptyState } from './operations';
+
+    import { KonroSchema } from './schema';
+
+    import { getSerializer } from './utils/serializer.util';
+
+    import { readFile, writeAtomic } from './utils/fs.util';
+
+    import { TEMP_FILE_SUFFIX } from './utils/constants';
+
+
+    export interface StorageAdapter {
+      read(schema: KonroSchema<any, any>): Promise<DatabaseState>;
+      write(state: DatabaseState): Promise<void>;
+    }
+
+
+    type SingleFileStrategy = { single: { filepath: string }; multi?: never; };
+
+    type MultiFileStrategy = { multi: { dir: string }; single?: never; };
+
+
+    export type FileAdapterOptions = {
+      format: 'json' | 'yaml';
+    } & (SingleFileStrategy | MultiFileStrategy);
+
+
+    export const createFileAdapter = (options: FileAdapterOptions):
+    StorageAdapter => {
+      const serializer = getSerializer(options.format);
+      const fileExtension = `.${options.format}`;
+
+      const readSingle = async (schema: KonroSchema<any, any>): Promise<DatabaseState> => {
+        const filepath = options.single!.filepath;
+        const data = await readFile(filepath);
+        return data ? serializer.parse<DatabaseState>(data) : createEmptyState(schema);
+      };
+
+      const writeSingle = async (state: DatabaseState): Promise<void> => {
+        const filepath = options.single!.filepath;
+        await writeAtomic(filepath, serializer.stringify(state));
+      };
+      
+      const readMulti = async (schema: KonroSchema<any, any>): Promise<DatabaseState> => {
+        const dir = options.multi!.dir;
+        const state = createEmptyState(schema);
+        await fs.mkdir(dir, { recursive: true });
+
+        for (const tableName in schema.tables) {
+          const filepath = path.join(dir, `${tableName}${fileExtension}`);
+          const data = await readFile(filepath);
+          if (data) {
+            state[tableName] = serializer.parse(data);
+          }
+        }
+        return state;
+      };
+      
+      const writeMulti = async (state: DatabaseState): Promise<void> => {
+        const dir = options.multi!.dir;
+        await fs.mkdir(dir, { recursive: true });
+        
+        // As per spec, write all to temp files first
+        const tempWrites = Object.entries(state).map(async ([tableName, tableState]) => {
+          const filepath = path.join(dir, `${tableName}${fileExtension}`);
+          const tempFilepath = `${filepath}.${Date.now()}${TEMP_FILE_SUFFIX}`;
+          const content = serializer.stringify(tableState);
+          await fs.writeFile(tempFilepath, content, 'utf-8');
+          return { tempFilepath, filepath };
+        });
+
+        const writtenFiles = await Promise.all(tempWrites);
+
+        // Then rename all
+        const renames = writtenFiles.map(({ tempFilepath, filepath }) =>
+          fs.rename(tempFilepath, filepath)
+        );
+
+        await Promise.all(renames);
+      };
+
+      if (options.single) {
+        return { read: readSingle, write: writeSingle };
+      } else {
+        return { read: readMulti, write: writeMulti };
+      }
+    };
+  src/db.ts: >
+    import { AggregationDefinition, ColumnDefinition, KonroSchema,
+    RelationDefinition } from './schema';
+
+    import { StorageAdapter } from './adapter';
+
+    import { DatabaseState, KRecord } from './types';
+
+    import { _queryImpl, _insertImpl, _updateImpl, _deleteImpl, createEmptyState
+    as createEmptyStateImpl, QueryDescriptor, _aggregateImpl,
+    AggregationDescriptor } from './operations';
+
+    import { createPredicateFromPartial } from './utils/predicate.util';
+
+
+    // A helper to normalize a predicate argument
+
+    const normalizePredicate = <T extends KRecord>(
+      predicate: Partial<T> | ((record: T) => boolean)
+    ): ((record: KRecord) => boolean) =>
+      // The cast is necessary due to function argument contravariance.
+      // The internal operations work on the wider `KRecord`, while the fluent API provides the specific `T`.
+      (typeof predicate === 'function' ? predicate : createPredicateFromPartial(predicate)) as (record: KRecord) => boolean;
+
+    // --- TYPE-SAFE FLUENT API BUILDERS ---
+
+
+    interface ChainedQueryBuilder<T> {
+      select(fields: Record<string, ColumnDefinition<unknown> | RelationDefinition>): this;
+      where(predicate: Partial<T> | ((record: T) => boolean)): this;
+      with(relations: QueryDescriptor['with']): this;
+      limit(count: number): this;
+      offset(count: number): this;
+      all(): Promise<T[]>;
+      first(): Promise<T | null>;
+      aggregate<TAggs extends Record<string, AggregationDefinition>>(
+        aggregations: TAggs
+      ): Promise<{ [K in keyof TAggs]: number | null }>;
+    }
+
+
+    interface QueryBuilder<S extends KonroSchema<any, any>> {
+      from<T extends keyof S['tables']>(tableName: T): ChainedQueryBuilder<S['types'][T]>;
+    }
+
+
+    interface UpdateBuilder<T> {
+      set(data: Partial<T>): {
+        where(predicate: Partial<T> | ((record: T) => boolean)): Promise<[DatabaseState, T[]]>;
+      };
+    }
+
+
+    interface DeleteBuilder<T> {
+      where(predicate: Partial<T> | ((record: T) => boolean)): Promise<[DatabaseState, T[]]>;
+    }
+
+
+    export interface DbContext<S extends KonroSchema<any, any>> {
+      schema: S;
+      adapter: StorageAdapter;
+      read(): Promise<DatabaseState>;
+      write(state: DatabaseState): Promise<void>;
+      createEmptyState(): DatabaseState;
+
+      query(state: DatabaseState): QueryBuilder<S>;
+      insert<T extends keyof S['types']>(state: DatabaseState, tableName: T, values: S['create'][T]): [DatabaseState, S['types'][T]];
+      insert<T extends keyof S['types']>(state: DatabaseState, tableName: T, values: Readonly<S['create'][T]>[]): [DatabaseState, S['types'][T][]];
+      update<T extends keyof S['tables']>(state: DatabaseState, tableName: T): UpdateBuilder<S['types'][T]>;
+      delete<T extends keyof S['tables']>(state: DatabaseState, tableName: T): DeleteBuilder<S['types'][T]>;
+    }
+
+
+    export const createDatabase = <S extends KonroSchema<any, any>>(options: {
+    schema: S, adapter: StorageAdapter }): DbContext<S> => {
+      const { schema, adapter } = options;
+
+      return {
+        schema,
+        adapter,
+        read: () => adapter.read(schema),
+        write: (state) => adapter.write(state),
+        createEmptyState: () => createEmptyStateImpl(schema),
+
+        insert: (<T extends keyof S['types']>(
+          state: DatabaseState,
+          tableName: T,
+          values: S['create'][T] | Readonly<S['create'][T]>[]
+        ): [DatabaseState, S['types'][T] | S['types'][T][]] => {
+          const valsArray = Array.isArray(values) ? values : [values];
+          const [newState, inserted] = _insertImpl(state, schema, tableName as string, valsArray as KRecord[]);
+          const result = Array.isArray(values) ? inserted : inserted[0];
+          return [newState, result] as [DatabaseState, S['types'][T] | S['types'][T][]];
+        }) as {
+          <T extends keyof S['types']>(state: DatabaseState, tableName: T, values: S['create'][T]): [DatabaseState, S['types'][T]];
+          <T extends keyof S['types']>(state: DatabaseState, tableName: T, values: Readonly<S['create'][T]>[]): [DatabaseState, S['types'][T][]];
+        },
+
+        query: (state: DatabaseState): QueryBuilder<S> => ({
+          from: <T extends keyof S['tables']>(tableName: T): ChainedQueryBuilder<S['types'][T]> => {
+            const descriptor: QueryDescriptor = { tableName: tableName as string };
+
+            const builder: ChainedQueryBuilder<S['types'][T]> = {
+              select: (fields) => {
+                descriptor.select = fields;
+                return builder;
+              },
+              where: (predicate) => {
+                descriptor.where = normalizePredicate(predicate);
+                return builder;
+              },
+              with: (relations) => {
+                descriptor.with = relations;
+                return builder;
+              },
+              limit: (count) => {
+                descriptor.limit = count;
+                return builder;
+              },
+              offset: (count) => {
+                descriptor.offset = count;
+                return builder;
+              },
+              all: async (): Promise<S['types'][T][]> => _queryImpl(state, schema, descriptor) as any,
+              first: async (): Promise<S['types'][T] | null> => (_queryImpl(state, schema, { ...descriptor, limit: 1 })[0] ?? null) as any,
+              aggregate: async <TAggs extends Record<string, AggregationDefinition>>(aggregations: TAggs): Promise<{ [K in keyof TAggs]: number | null }> => {
+                const aggDescriptor: AggregationDescriptor = { ...descriptor, aggregations };
+                return _aggregateImpl(state, schema, aggDescriptor) as { [K in keyof TAggs]: number | null };
+              },
+            };
+            return builder;
+          },
+        }),
+
+        update: <T extends keyof S['tables']>(state: DatabaseState, tableName: T): UpdateBuilder<S['types'][T]> => ({
+          set: (data) => ({
+            where: async (predicate) => {
+              const [newState, updatedRecords] = _updateImpl(state, schema, tableName as string, data as Partial<KRecord>, normalizePredicate(predicate));
+              return [newState, updatedRecords as S['types'][T][]];
+            },
+          }),
+        }),
+
+        delete: <T extends keyof S['tables']>(state: DatabaseState, tableName: T): DeleteBuilder<S['types'][T]> => ({
+          where: async (predicate) => {
+            const [newState, deletedRecords] = _deleteImpl(state, tableName as string, normalizePredicate(predicate));
+            return [newState, deletedRecords as S['types'][T][]];
+          },
+        }),
+      };
+    };
+approved: true

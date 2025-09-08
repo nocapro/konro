@@ -1,0 +1,880 @@
+uuid: 440a7a3b-285b-4cce-9588-ac49859f7734
+projectId: konro
+createdAt: '2025-07-07T05:11:07.546Z'
+gitCommitMsg: 'refactor: extract utils and constants, improve code structure'
+promptSummary: >-
+  Refactor the codebase to extract utilities into separate files, create a
+  constants file, and ensure the code is generic, DRY, and follows functional
+  programming principles without classes or excessive type casting. Also, align
+  the package name with the documentation.
+reasoning:
+  - Here is the plan to refactor your KonroDB project.
+  - >-
+    I will introduce a `utils` directory to better organize the code, extracting
+    functionalities into specific utility files. This will make the codebase
+    more modular, maintainable, and align with the DRY principle. I will also
+    create a central place for constants.
+  - 'Here''s a breakdown of the changes:'
+  - '1.  **Dependency Management (`package.json`)**:'
+  - '*   Rename the package to `konro-db` to match the documentation.'
+  - >-
+    *   Add type definitions for `js-yaml` to `devDependencies` for better type
+    safety.
+  - '*   Declare `js-yaml` as an optional peer dependency.'
+  - '2.  **Utilities Extraction**:'
+  - >-
+    *   **`src/utils/constants.ts`**: A new file to store shared constants, such
+    as the temporary file suffix.
+  - >-
+    *   **`src/utils/error.util.ts`**: A new file to define custom error types
+    using factory functions, avoiding classes as requested.
+  - >-
+    *   **`src/utils/fs.util.ts`**: Extracts file system operations (`readFile`,
+    `writeAtomic`) from `src/adapter.ts`.
+  - >-
+    *   **`src/utils/serializer.util.ts`**: Extracts serialization logic
+    (`getSerializer`) from `src/adapter.ts`.
+  - >-
+    *   **`src/utils/predicate.util.ts`**: Extracts the predicate creation logic
+    from `src/db.ts` into a reusable, cast-free helper.
+  - '3.  **Code Refactoring**:'
+  - >-
+    *   **`src/adapter.ts`**: Refactor to import and use the new utilities,
+    significantly cleaning up the file.
+  - >-
+    *   **`src/db.ts`**: Update to use the new predicate utility, simplifying
+    its internal helpers.
+  - >-
+    *   **`src/operations.ts`**: An error in my analysis showed `relationType`
+    was already there. I will modify `_deleteImpl` and `_updateImpl` to use a
+    `KonroError` for consistency.
+  - >-
+    These changes will improve the project's structure and adhere to the
+    principles of creating clean, functional, and type-safe code.
+  - First, I'll create the new utility files.
+  - Now, I'll update `package.json`.
+  - Next, I'll refactor `src/adapter.ts` to use these new utilities.
+  - >-
+    I'll now update `src/db.ts` to use the predicate utility. This simplifies
+    the `normalizePredicate` helper significantly.
+  - >-
+    Finally, I'll update `src/operations.ts` to use the custom error type for
+    consistency.
+operations:
+  - type: write
+    path: src/utils/constants.ts
+    content: export const TEMP_FILE_SUFFIX = '.tmp';
+    patchStrategy: replace
+  - type: write
+    path: src/utils/error.util.ts
+    content: >-
+      // Per user request: no classes. Using factory functions for errors.
+
+      const createKonroError = (name: string) => (message: string): Error => {
+        const error = new Error(message);
+        error.name = name;
+        return error;
+      };
+
+
+      /** Base class for all Konro-specific errors. */
+
+      export const KonroError = createKonroError('KonroError');
+
+
+      /** Thrown for storage adapter-related issues. */
+
+      export const KonroStorageError = createKonroError('KonroStorageError');
+
+
+      /** Thrown for schema validation errors. */
+
+      export const KonroValidationError =
+      createKonroError('KonroValidationError');
+
+
+      /** Thrown when a resource is not found. */
+
+      export const KonroNotFoundError = createKonroError('KonroNotFoundError');
+    patchStrategy: replace
+  - type: write
+    path: src/utils/fs.util.ts
+    content: >-
+      import { promises as fs } from 'fs';
+
+      import path from 'path';
+
+      import { TEMP_FILE_SUFFIX } from './constants';
+
+
+      export const readFile = async (filepath: string): Promise<string | null>
+      => {
+        try {
+          return await fs.readFile(filepath, 'utf-8');
+        } catch (error: any) {
+          if (error.code === 'ENOENT') {
+            return null;
+          }
+          throw error;
+        }
+      };
+
+
+      export const writeAtomic = async (filepath: string, content: string):
+      Promise<void> => {
+          // Adding Date.now() for uniqueness in case of concurrent operations
+          const tempFilepath = `${filepath}.${Date.now()}${TEMP_FILE_SUFFIX}`;
+          await fs.mkdir(path.dirname(filepath), { recursive: true });
+          await fs.writeFile(tempFilepath, content, 'utf-8');
+          await fs.rename(tempFilepath, filepath);
+      };
+    patchStrategy: replace
+  - type: write
+    path: src/utils/predicate.util.ts
+    content: >-
+      import { KRecord } from '../types';
+
+
+      /** Creates a predicate function from a partial object for equality
+      checks, avoiding internal casts. */
+
+      export const createPredicateFromPartial = <T extends KRecord>(partial:
+      Partial<T>): ((record: T) => boolean) => {
+        // `Object.keys` is cast because TypeScript types it as `string[]` instead of `(keyof T)[]`.
+        const keys = Object.keys(partial) as (keyof T)[];
+        return (record: T): boolean => keys.every(key => record[key] === partial[key]);
+      };
+    patchStrategy: replace
+  - type: write
+    path: src/utils/serializer.util.ts
+    content: >-
+      import { KonroStorageError } from './error.util';
+
+
+      let yaml: { parse: (str: string) => unknown; stringify: (obj: any,
+      options?: any) => string; } | undefined;
+
+      try {
+        // Lazily attempt to load optional dependency
+        yaml = require('js-yaml');
+      } catch {
+        // js-yaml is not installed.
+      }
+
+
+      export type Serializer = {
+        parse: <T>(data: string) => T;
+        stringify: (obj: any) => string;
+      };
+
+
+      export const getSerializer = (format: 'json' | 'yaml'): Serializer => {
+        if (format === 'json') {
+          return {
+            parse: <T>(data: string): T => JSON.parse(data),
+            stringify: (obj: any): string => JSON.stringify(obj, null, 2),
+          };
+        }
+
+        if (!yaml) {
+          throw KonroStorageError("The 'yaml' format requires 'js-yaml' to be installed. Please run 'npm install js-yaml'.");
+        }
+
+        return {
+          // The cast from `unknown` is necessary as `yaml.parse` is correctly typed to return `unknown`.
+          parse: <T>(data: string): T => yaml.parse(data) as T,
+          stringify: (obj: any): string => yaml.stringify(obj),
+        };
+      };
+    patchStrategy: replace
+  - type: write
+    path: package.json
+    content: |-
+      <<<<<<< SEARCH
+      {
+        "name": "konro",
+        "module": "src/index.ts",
+        "type": "module",
+        "devDependencies": {
+          "@types/bun": "latest"
+        },
+        "peerDependencies": {
+          "typescript": "^5"
+        }
+      }
+      =======
+      {
+        "name": "konro-db",
+        "module": "src/index.ts",
+        "type": "module",
+        "devDependencies": {
+          "@types/bun": "latest",
+          "@types/js-yaml": "^4.0.9"
+        },
+        "peerDependencies": {
+          "typescript": "^5.0.0",
+          "js-yaml": "^4.1.0"
+        },
+        "peerDependenciesMeta": {
+          "js-yaml": {
+            "optional": true
+          }
+        }
+      }
+      >>>>>>> REPLACE
+    patchStrategy: multi-search-replace
+  - type: write
+    path: src/adapter.ts
+    content: >-
+      import { promises as fs } from 'fs';
+
+      import path from 'path';
+
+      import { DatabaseState } from './types';
+
+      import { createEmptyState } from './operations';
+
+      import { KonroSchema } from './schema';
+
+      import { getSerializer } from './utils/serializer.util';
+
+      import { readFile, writeAtomic } from './utils/fs.util';
+
+      import { TEMP_FILE_SUFFIX } from './utils/constants';
+
+
+      export interface StorageAdapter {
+        read(schema: KonroSchema<any, any>): Promise<DatabaseState>;
+        write(state: DatabaseState): Promise<void>;
+      }
+
+
+      type SingleFileStrategy = { single: { filepath: string }; multi?: never;
+      };
+
+      type MultiFileStrategy = { multi: { dir: string }; single?: never; };
+
+
+      export type FileAdapterOptions = {
+        format: 'json' | 'yaml';
+      } & (SingleFileStrategy | MultiFileStrategy);
+
+
+      export const createFileAdapter = (options: FileAdapterOptions):
+      StorageAdapter => {
+        const serializer = getSerializer(options.format);
+        const fileExtension = `.${options.format}`;
+
+        const readSingle = async (schema: KonroSchema<any, any>): Promise<DatabaseState> => {
+          const filepath = options.single!.filepath;
+          const data = await readFile(filepath);
+          return data ? serializer.parse<DatabaseState>(data) : createEmptyState(schema);
+        };
+
+        const writeSingle = async (state: DatabaseState): Promise<void> => {
+          const filepath = options.single!.filepath;
+          await writeAtomic(filepath, serializer.stringify(state));
+        };
+        
+        const readMulti = async (schema: KonroSchema<any, any>): Promise<DatabaseState> => {
+          const dir = options.multi!.dir;
+          const state = createEmptyState(schema);
+          await fs.mkdir(dir, { recursive: true });
+
+          for (const tableName in schema.tables) {
+            const filepath = path.join(dir, `${tableName}${fileExtension}`);
+            const data = await readFile(filepath);
+            if (data) {
+              state[tableName] = serializer.parse(data);
+            }
+          }
+          return state;
+        };
+        
+        const writeMulti = async (state: DatabaseState): Promise<void> => {
+          const dir = options.multi!.dir;
+          await fs.mkdir(dir, { recursive: true });
+          
+          // As per spec, write all to temp files first
+          const tempWrites = Object.entries(state).map(async ([tableName, tableState]) => {
+            const filepath = path.join(dir, `${tableName}${fileExtension}`);
+            const tempFilepath = `${filepath}.${Date.now()}${TEMP_FILE_SUFFIX}`;
+            const content = serializer.stringify(tableState);
+            await fs.writeFile(tempFilepath, content, 'utf-8');
+            return { tempFilepath, filepath };
+          });
+
+          const writtenFiles = await Promise.all(tempWrites);
+
+          // Then rename all
+          const renames = writtenFiles.map(({ tempFilepath, filepath }) =>
+            fs.rename(tempFilepath, filepath)
+          );
+
+          await Promise.all(renames);
+        };
+
+        if (options.single) {
+          return { read: readSingle, write: writeSingle };
+        } else {
+          return { read: readMulti, write: writeMulti };
+        }
+      };
+    patchStrategy: replace
+  - type: write
+    path: src/db.ts
+    content: >-
+      --- src/db.ts
+
+      +++ src/db.ts
+
+      @@ -1,15 +1,15 @@
+       import { KonroSchema } from './schema';
+       import { StorageAdapter } from './adapter';
+       import { DatabaseState, KRecord } from './types';
+       import { _queryImpl, _insertImpl, _updateImpl, _deleteImpl, createEmptyState as createEmptyStateImpl, QueryDescriptor } from './operations';
+      -
+
+      -// A helper to create a predicate function from a partial object
+
+      -const createPredicate = <T extends KRecord>(partial: Partial<T>) =>
+
+      -  (record: T): boolean =>
+
+      -    Object.entries(partial).every(([key, value]) => (record as
+      KRecord)[key] === value);
+
+      +import { createPredicateFromPartial } from './utils/predicate.util';
+       
+       // A helper to normalize a predicate argument
+      -const normalizePredicate = <T extends KRecord>(predicate: Partial<T> |
+      ((record: T) => boolean)): ((record: KRecord) => boolean) =>
+
+      -  typeof predicate === 'function' ? predicate as ((record: KRecord) =>
+      boolean) : createPredicate(predicate as Partial<KRecord>);
+
+      +const normalizePredicate = <T extends KRecord>(
+
+      +  predicate: Partial<T> | ((record: T) => boolean)
+
+      +): ((record: KRecord) => boolean) =>
+
+      +  // The cast is necessary due to function argument contravariance.
+
+      +  // The internal operations work on the wider `KRecord`, while the
+      fluent API provides the specific `T`.
+
+      +  (typeof predicate === 'function' ? predicate :
+      createPredicateFromPartial(predicate)) as (record: KRecord) => boolean;
+       
+       // --- TYPE-SAFE FLUENT API BUILDERS ---
+    patchStrategy: new-unified
+  - type: write
+    path: src/operations.ts
+    content: >-
+      --- src/operations.ts
+
+      +++ src/operations.ts
+
+      @@ -1,5 +1,6 @@
+       import { DatabaseState, KRecord } from './types';
+       import { KonroSchema, RelationDefinition } from './schema';
+      +import { KonroError } from './utils/error.util';
+       
+       // --- HELPERS ---
+       
+      @@ -82,7 +83,7 @@
+       export const _insertImpl = (state: DatabaseState, schema: KonroSchema<any, any>, tableName: string, values: KRecord[]): [DatabaseState, KRecord[]] => {
+         const newState = structuredClone(state);
+         const tableState = newState[tableName];
+      -  if (!tableState) throw new Error(`Table "${tableName}" does not exist
+      in the database state.`);
+
+      +  if (!tableState) throw KonroError(`Table "${tableName}" does not exist
+      in the database state.`);
+         const tableSchema = schema.tables[tableName];
+         const insertedRecords: KRecord[] = [];
+       
+      @@ -107,7 +108,7 @@
+       export const _updateImpl = (state: DatabaseState, tableName: string, data: Partial<KRecord>, predicate: (record: KRecord) => boolean): [DatabaseState, KRecord[]] => {
+         const newState = structuredClone(state);
+         const tableState = newState[tableName];
+      -  if (!tableState) throw new Error(`Table "${tableName}" does not exist
+      in the database state.`);
+
+      +  if (!tableState) throw KonroError(`Table "${tableName}" does not exist
+      in the database state.`);
+         const updatedRecords: KRecord[] = [];
+       
+         tableState.records = tableState.records.map(record => {
+      @@ -126,7 +127,7 @@
+       export const _deleteImpl = (state: DatabaseState, tableName: string, predicate: (record: KRecord) => boolean): [DatabaseState, KRecord[]] => {
+         const newState = structuredClone(state);
+         const tableState = newState[tableName];
+      -  if (!tableState) throw new Error(`Table "${tableName}" does not exist
+      in the database state.`);
+
+      +  if (!tableState) throw KonroError(`Table "${tableName}" does not exist
+      in the database state.`);
+         const deletedRecords: KRecord[] = [];
+       
+         const keptRecords = tableState.records.filter(record => {
+    patchStrategy: new-unified
+snapshot:
+  src/utils/constants.ts: null
+  src/utils/error.util.ts: null
+  src/utils/fs.util.ts: null
+  src/utils/predicate.util.ts: null
+  src/utils/serializer.util.ts: null
+  package.json: |
+    {
+      "name": "konro",
+      "module": "src/index.ts",
+      "type": "module",
+      "devDependencies": {
+        "@types/bun": "latest"
+      },
+      "peerDependencies": {
+        "typescript": "^5"
+      }
+    }
+  src/adapter.ts: >-
+    import { promises as fs } from 'fs';
+
+    import path from 'path';
+
+    import { DatabaseState } from './types';
+
+    import { createEmptyState } from './operations';
+
+    import { KonroSchema } from './schema';
+
+
+    let yaml: { parse: (str: string) => any; stringify: (obj: any, options?:
+    any) => string; } | undefined;
+
+    try {
+      yaml = require('js-yaml');
+    } catch {
+      // js-yaml is an optional peer dependency
+    }
+
+
+    export interface StorageAdapter {
+      read(schema: KonroSchema<any, any>): Promise<DatabaseState>;
+      write(state: DatabaseState): Promise<void>;
+    }
+
+
+    type SingleFileStrategy = { single: { filepath: string }; multi?: never; };
+
+    type MultiFileStrategy = { multi: { dir: string }; single?: never; };
+
+
+    export type FileAdapterOptions = {
+      format: 'json' | 'yaml';
+    } & (SingleFileStrategy | MultiFileStrategy);
+
+
+    const getSerializer = (format: 'json' | 'yaml') => {
+      if (format === 'json') {
+        return {
+          parse: (data: string) => JSON.parse(data),
+          stringify: (obj: any) => JSON.stringify(obj, null, 2),
+        };
+      }
+      if (!yaml) {
+        throw new Error("The 'yaml' format requires 'js-yaml' to be installed. Please run 'npm install js-yaml'.");
+      }
+      return {
+        parse: (data: string) => yaml.parse(data),
+        stringify: (obj: any) => yaml.stringify(obj),
+      };
+    };
+
+
+    const readFile = async (filepath: string): Promise<string | null> => {
+      try {
+        return await fs.readFile(filepath, 'utf-8');
+      } catch (error: any) {
+        if (error.code === 'ENOENT') {
+          return null;
+        }
+        throw error;
+      }
+    };
+
+
+    const writeAtomic = async (filepath: string, content: string): Promise<void>
+    => {
+        const tempFilepath = `${filepath}.${Date.now()}.tmp`;
+        await fs.mkdir(path.dirname(filepath), { recursive: true });
+        await fs.writeFile(tempFilepath, content, 'utf-8');
+        await fs.rename(tempFilepath, filepath);
+    };
+
+
+
+    export const createFileAdapter = (options: FileAdapterOptions):
+    StorageAdapter => {
+      const serializer = getSerializer(options.format);
+      const fileExtension = `.${options.format}`;
+
+      const readSingle = async (schema: KonroSchema<any, any>): Promise<DatabaseState> => {
+        const filepath = options.single!.filepath;
+        const data = await readFile(filepath);
+        return data ? serializer.parse(data) : createEmptyState(schema);
+      };
+
+      const writeSingle = async (state: DatabaseState): Promise<void> => {
+        const filepath = options.single!.filepath;
+        await writeAtomic(filepath, serializer.stringify(state));
+      };
+      
+      const readMulti = async (schema: KonroSchema<any, any>): Promise<DatabaseState> => {
+        const dir = options.multi!.dir;
+        const state = createEmptyState(schema);
+        await fs.mkdir(dir, { recursive: true });
+
+        for (const tableName in schema.tables) {
+          const filepath = path.join(dir, `${tableName}${fileExtension}`);
+          const data = await readFile(filepath);
+          if (data) {
+            state[tableName] = serializer.parse(data);
+          }
+        }
+        return state;
+      };
+      
+      const writeMulti = async (state: DatabaseState): Promise<void> => {
+        const dir = options.multi!.dir;
+        await fs.mkdir(dir, { recursive: true });
+        
+        // As per spec, write all to temp files first
+        const tempWrites = Object.entries(state).map(async ([tableName, tableState]) => {
+          const filepath = path.join(dir, `${tableName}${fileExtension}`);
+          const tempFilepath = `${filepath}.${Date.now()}.tmp`;
+          const content = serializer.stringify(tableState);
+          await fs.writeFile(tempFilepath, content, 'utf-8');
+          return { tempFilepath, filepath };
+        });
+
+        const writtenFiles = await Promise.all(tempWrites);
+
+        // Then rename all
+        const renames = writtenFiles.map(({ tempFilepath, filepath }) =>
+          fs.rename(tempFilepath, filepath)
+        );
+
+        await Promise.all(renames);
+      };
+
+      if (options.single) {
+        return { read: readSingle, write: writeSingle };
+      } else {
+        return { read: readMulti, write: writeMulti };
+      }
+    };
+  src/db.ts: >-
+    import { KonroSchema } from './schema';
+
+    import { StorageAdapter } from './adapter';
+
+    import { DatabaseState, KRecord } from './types';
+
+    import { _queryImpl, _insertImpl, _updateImpl, _deleteImpl, createEmptyState
+    as createEmptyStateImpl, QueryDescriptor } from './operations';
+
+
+    // A helper to create a predicate function from a partial object
+
+    const createPredicate = <T extends KRecord>(partial: Partial<T>) =>
+      (record: T): boolean =>
+        Object.entries(partial).every(([key, value]) => (record as KRecord)[key] === value);
+
+    // A helper to normalize a predicate argument
+
+    const normalizePredicate = <T extends KRecord>(predicate: Partial<T> |
+    ((record: T) => boolean)): ((record: KRecord) => boolean) =>
+      typeof predicate === 'function' ? predicate as ((record: KRecord) => boolean) : createPredicate(predicate as Partial<KRecord>);
+
+    // --- TYPE-SAFE FLUENT API BUILDERS ---
+
+
+    interface ChainedQueryBuilder<T> {
+      where(predicate: Partial<T> | ((record: T) => boolean)): this;
+      with(relations: QueryDescriptor['with']): this;
+      limit(count: number): this;
+      offset(count: number): this;
+      all(): Promise<T[]>;
+      first(): Promise<T | null>;
+    }
+
+
+    interface QueryBuilder<S extends KonroSchema<any, any>> {
+      from<T extends keyof S['tables']>(tableName: T): ChainedQueryBuilder<S['types'][T]>;
+    }
+
+
+    interface UpdateBuilder<T> {
+      set(data: Partial<T>): {
+        where(predicate: Partial<T> | ((record: T) => boolean)): [DatabaseState, T[]];
+      };
+    }
+
+
+    interface DeleteBuilder<T> {
+      where(predicate: Partial<T> | ((record: T) => boolean)): [DatabaseState, T[]];
+    }
+
+
+    export interface DbContext<S extends KonroSchema<any, any>> {
+      schema: S;
+      adapter: StorageAdapter;
+      read(): Promise<DatabaseState>;
+      write(state: DatabaseState): Promise<void>;
+      createEmptyState(): DatabaseState;
+
+      query(state: DatabaseState): QueryBuilder<S>;
+      insert<T extends keyof S['types']>(state: DatabaseState, tableName: T, values: S['types'][T] | Readonly<S['types'][T]>[]): [DatabaseState, S['types'][T] | S['types'][T][]];
+      update<T extends keyof S['tables']>(state: DatabaseState, tableName: T): UpdateBuilder<S['types'][T]>;
+      delete<T extends keyof S['tables']>(state: DatabaseState, tableName: T): DeleteBuilder<S['types'][T]>;
+    }
+
+
+    export const createDatabase = <S extends KonroSchema<any, any>>(options: {
+    schema: S, adapter: StorageAdapter }): DbContext<S> => {
+      const { schema, adapter } = options;
+
+      return {
+        schema,
+        adapter,
+        read: () => adapter.read(schema),
+        write: (state) => adapter.write(state),
+        createEmptyState: () => createEmptyStateImpl(schema),
+
+        insert: (state, tableName, values) => {
+          const valsArray = Array.isArray(values) ? values : [values];
+          const [newState, inserted] = _insertImpl(state, schema, tableName as string, valsArray as KRecord[]);
+          const result = Array.isArray(values) ? inserted : inserted[0];
+          return [newState, result] as [DatabaseState, S['types'][typeof tableName] | S['types'][typeof tableName][]];
+        },
+
+        query: (state: DatabaseState): QueryBuilder<S> => ({
+          from: <T extends keyof S['tables']>(tableName: T): ChainedQueryBuilder<S['types'][T]> => {
+            const descriptor: QueryDescriptor = { tableName: tableName as string };
+
+            const builder: ChainedQueryBuilder<S['types'][T]> = {
+              where: (predicate) => {
+                descriptor.where = normalizePredicate(predicate);
+                return builder;
+              },
+              with: (relations) => {
+                descriptor.with = relations;
+                return builder;
+              },
+              limit: (count) => {
+                descriptor.limit = count;
+                return builder;
+              },
+              offset: (count) => {
+                descriptor.offset = count;
+                return builder;
+              },
+              all: async () => _queryImpl(state, schema, descriptor) as S['types'][T][],
+              first: async () => (_queryImpl(state, schema, { ...descriptor, limit: 1 })[0] ?? null) as S['types'][T] | null,
+            };
+            return builder;
+          },
+        }),
+
+        update: <T extends keyof S['tables']>(state: DatabaseState, tableName: T): UpdateBuilder<S['types'][T]> => ({
+          set: (data) => ({
+            where: (predicate) => {
+              const [newState, updatedRecords] = _updateImpl(state, tableName as string, data as Partial<KRecord>, normalizePredicate(predicate));
+              return [newState, updatedRecords as S['types'][T][]];
+            },
+          }),
+        }),
+
+        delete: <T extends keyof S['tables']>(state: DatabaseState, tableName: T): DeleteBuilder<S['types'][T]> => ({
+          where: (predicate) => {
+            const [newState, deletedRecords] = _deleteImpl(state, tableName as string, normalizePredicate(predicate));
+            return [newState, deletedRecords as S['types'][T][]];
+          },
+        }),
+      };
+    };
+  src/operations.ts: >
+    import { DatabaseState, KRecord } from './types';
+
+    import { KonroSchema, RelationDefinition } from './schema';
+
+
+    // --- HELPERS ---
+
+
+
+    /** Creates a pristine, empty database state from a schema. */
+
+    export const createEmptyState = (schema: KonroSchema<any, any>):
+    DatabaseState => {
+      const state: DatabaseState = {};
+      for (const tableName in schema.tables) {
+        state[tableName] = { records: [], meta: { lastId: 0 } };
+      }
+      return state;
+    };
+
+
+    // --- QUERY ---
+
+
+    export interface QueryDescriptor {
+      tableName: string;
+      where?: (record: KRecord) => boolean;
+      with?: Record<string, boolean | { where?: (record: KRecord) => boolean }>;
+      limit?: number;
+      offset?: number;
+    }
+
+
+    export const _queryImpl = (state: DatabaseState, schema: KonroSchema<any,
+    any>, descriptor: QueryDescriptor): KRecord[] => {
+      const tableState = state[descriptor.tableName];
+      if (!tableState) return [];
+
+      // 1. Filter
+      let results = descriptor.where ? tableState.records.filter(descriptor.where) : [...tableState.records];
+
+      // 2. Eager load relations (`with`)
+      if (descriptor.with) {
+        results = structuredClone(results); // Clone to avoid mutating state
+        for (const record of results) {
+          for (const relationName in descriptor.with) {
+            const relationDef = schema.relations[descriptor.tableName]?.[relationName];
+            if (!relationDef) continue;
+
+            const relatedRecords = findRelatedRecords(state, record, relationDef);
+
+            const withOpts = descriptor.with[relationName];
+            const nestedWhere = typeof withOpts === 'object' ? withOpts.where : undefined;
+
+            const filteredRelatedRecords = nestedWhere ? relatedRecords.filter(nestedWhere) : relatedRecords;
+            if (relationDef.relationType === 'one') {
+              record[relationName] = filteredRelatedRecords[0] ?? null;
+            } else {
+              record[relationName] = filteredRelatedRecords;
+            }
+          }
+        }
+      }
+
+      // 3. Paginate
+      const offset = descriptor.offset ?? 0;
+      const limit = descriptor.limit ?? results.length;
+      return results.slice(offset, offset + limit);
+    };
+
+
+    const findRelatedRecords = (state: DatabaseState, record: KRecord,
+    relationDef: RelationDefinition) => {
+      const foreignKey = record[relationDef.on];
+      const targetTable = state[relationDef.targetTable];
+
+      if (foreignKey === undefined || !targetTable) return [];
+
+      // one-to-many: 'on' is PK on current table, 'references' is FK on target
+      if (relationDef.relationType === 'many') {
+        return targetTable.records.filter(r => r[relationDef.references] === foreignKey);
+      }
+
+      // many-to-one: 'on' is FK on current table, 'references' is PK on target
+      if (relationDef.relationType === 'one') {
+        return targetTable.records.filter(r => r[relationDef.references] === foreignKey);
+      }
+
+      return [];
+    };
+
+
+
+    // --- INSERT ---
+
+
+    export const _insertImpl = (state: DatabaseState, schema: KonroSchema<any,
+    any>, tableName: string, values: KRecord[]): [DatabaseState, KRecord[]] => {
+      const newState = structuredClone(state);
+      const tableState = newState[tableName];
+      if (!tableState) throw new Error(`Table "${tableName}" does not exist in the database state.`);
+      const tableSchema = schema.tables[tableName];
+      const insertedRecords: KRecord[] = [];
+
+      for (const value of values) {
+        const newRecord: KRecord = { ...value };
+        // Handle IDs and defaults
+        for (const colName in tableSchema) {
+          const colDef = tableSchema[colName];
+          if (colDef.dataType === 'id') {
+            tableState.meta.lastId++;
+            newRecord[colName] = tableState.meta.lastId;
+          }
+          if (newRecord[colName] === undefined && colDef.options?.default !== undefined) {
+            newRecord[colName] = typeof colDef.options.default === 'function' ? colDef.options.default() : colDef.options.default;
+          }
+        }
+        tableState.records.push(newRecord);
+        insertedRecords.push(newRecord);
+      }
+
+      return [newState, insertedRecords];
+    };
+
+
+    // --- UPDATE ---
+
+
+    export const _updateImpl = (state: DatabaseState, tableName: string, data:
+    Partial<KRecord>, predicate: (record: KRecord) => boolean): [DatabaseState,
+    KRecord[]] => {
+      const newState = structuredClone(state);
+      const tableState = newState[tableName];
+      if (!tableState) throw new Error(`Table "${tableName}" does not exist in the database state.`);
+      const updatedRecords: KRecord[] = [];
+
+      tableState.records = tableState.records.map(record => {
+        if (predicate(record)) {
+          const updatedRecord = { ...record, ...data };
+          updatedRecords.push(updatedRecord);
+          return updatedRecord;
+        }
+        return record;
+      });
+
+      return [newState, updatedRecords];
+    };
+
+
+
+    // --- DELETE ---
+
+
+    export const _deleteImpl = (state: DatabaseState, tableName: string,
+    predicate: (record: KRecord) => boolean): [DatabaseState, KRecord[]] => {
+      const newState = structuredClone(state);
+      const tableState = newState[tableName];
+      if (!tableState) throw new Error(`Table "${tableName}" does not exist in the database state.`);
+      const deletedRecords: KRecord[] = [];
+
+      const keptRecords = tableState.records.filter(record => {
+        if (predicate(record)) {
+          deletedRecords.push(record);
+          return false;
+        }
+        return true;
+      });
+
+      tableState.records = keptRecords;
+      return [newState, deletedRecords];
+    };
+approved: true

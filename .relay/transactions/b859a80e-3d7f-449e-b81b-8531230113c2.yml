@@ -1,0 +1,233 @@
+uuid: b859a80e-3d7f-449e-b81b-8531230113c2
+projectId: konro
+createdAt: '2025-07-08T14:04:28.488Z'
+linesAdded: 1
+linesRemoved: 1
+gitCommitMsg: >-
+  fix(types): correct WithArgument filter to properly infer nested where clause
+  types
+promptSummary: >-
+  Fix a TypeScript error where a parameter in a nested 'where' clause inside a
+  '.with()' call is being inferred as 'unknown'.
+reasoning:
+  - >-
+    Hello! As an expert AI programmer, I've analyzed your request and identified
+    the root cause of the TypeScript error. Here are the precise modifications
+    to fix the type inference issue.
+  - '### Reasoning for the fix'
+  - >-
+    The error `'post' is of type 'unknown'` in
+    `test/integration/Types/InferredTypes.test-d.ts` indicates a failure in
+    TypeScript's ability to infer the type of the `post` parameter within the
+    nested `where` clause of a `.with()` call.
+  - >-
+    The root cause lies in the `WithArgument<T>` type definition in `src/db.ts`.
+    This type is responsible for providing the strong types for the `.with()`
+    method's argument. Specifically, the key-filtering logic was too permissive.
+  - 'The original filter was: `... extends any[] | (any | null)`'
+  - >-
+    The `any` type is very broad, causing primitive properties like `name:
+    string` to be incorrectly treated as valid relation keys for the `with`
+    clause. When the type checker considered a primitive property, the
+    `RelatedModel` utility would resolve to `never`. When TypeScript attempted
+    to infer the type for the lambda parameter `post` against a contextual type
+    of `never`, it failed and defaulted to `unknown`, leading to the error.
+  - >-
+    The fix is to make the key-filtering condition more precise. By changing it
+    to `... extends any[] | object`, we correctly filter for properties that are
+    either arrays (for to-many relations) or objects (for to-one relations),
+    while correctly excluding primitives like `string`.
+  - >-
+    With this change, `WithArgument<User>` will only allow valid relation keys.
+    The `RelatedModel` utility will then receive the correct input and infer the
+    proper model type (e.g., `Post`), which in turn allows TypeScript to
+    correctly type the `post` parameter in the `where` lambda, resolving the
+    error.
+  - '### Code Modification'
+  - I will now apply the change to `src/db.ts`.
+  - >-
+    This single change corrects the type-level issue without affecting any
+    runtime logic.
+  - '---'
+operations:
+  - type: write
+    path: src/db.ts
+    content: |-
+      <<<<<<< SEARCH
+      type WithArgument<T> = {
+        [K in keyof T as NonNullable<T[K]> extends any[] | (any | null) ? K : never]?: boolean | {
+          where?: (record: RelatedModel<NonNullable<T[K]>>) => boolean;
+      =======
+      type WithArgument<T> = {
+        [K in keyof T as NonNullable<T[K]> extends any[] | object ? K : never]?: boolean | {
+          where?: (record: RelatedModel<NonNullable<T[K]>>) => boolean;
+      >>>>>>> REPLACE
+    patchStrategy: multi-search-replace
+snapshot:
+  src/db.ts: >
+    import { AggregationDefinition, ColumnDefinition, KonroSchema,
+    RelationDefinition } from './schema';
+
+    import { StorageAdapter } from './adapter';
+
+    import { DatabaseState, KRecord } from './types';
+
+    import { _queryImpl, _insertImpl, _updateImpl, _deleteImpl, createEmptyState
+    as createEmptyStateImpl, QueryDescriptor, _aggregateImpl,
+    AggregationDescriptor } from './operations';
+
+    import { createPredicateFromPartial } from './utils/predicate.util';
+
+
+    // A helper to normalize a predicate argument
+
+    const normalizePredicate = <T extends KRecord>(
+      predicate: Partial<T> | ((record: T) => boolean)
+    ): ((record: KRecord) => boolean) =>
+      // The cast is necessary due to function argument contravariance.
+      // The internal operations work on the wider `KRecord`, while the fluent API provides the specific `T`.
+      (typeof predicate === 'function' ? predicate : createPredicateFromPartial(predicate)) as (record: KRecord) => boolean;
+
+    // --- TYPE HELPERS for Fluent API ---
+
+
+    type RelatedModel<T> = T extends (infer R)[] ? R : T extends (infer R |
+    null) ? R : never;
+
+
+    type WithArgument<T> = {
+      [K in keyof T as NonNullable<T[K]> extends any[] | (any | null) ? K : never]?: boolean | {
+        where?: (record: RelatedModel<NonNullable<T[K]>>) => boolean;
+        select?: Record<string, ColumnDefinition<unknown>>; // Not fully typed yet, but better than nothing
+      };
+    };
+
+
+    // --- TYPE-SAFE FLUENT API BUILDERS ---
+
+
+    interface ChainedQueryBuilder<T> {
+      select(fields: Record<string, ColumnDefinition<unknown> | RelationDefinition>): this;
+      where(predicate: Partial<T> | ((record: T) => boolean)): this;
+      with(relations: WithArgument<T>): this;
+      limit(count: number): this;
+      offset(count: number): this;
+      all(): T[];
+      first(): T | null;
+      aggregate<TAggs extends Record<string, AggregationDefinition>>(
+        aggregations: TAggs
+      ): { [K in keyof TAggs]: number | null };
+    }
+
+
+    interface QueryBuilder<S extends KonroSchema<any, any>> {
+      from<T extends keyof S['tables']>(tableName: T): ChainedQueryBuilder<S['types'][T]>;
+    }
+
+
+    interface UpdateBuilder<S extends KonroSchema<any, any>, T> {
+      set(data: Partial<T>): {
+        where(predicate: Partial<T> | ((record: T) => boolean)): [DatabaseState<S>, T[]];
+      };
+    }
+
+
+    interface DeleteBuilder<S extends KonroSchema<any, any>, T> {
+      where(predicate: Partial<T> | ((record: T) => boolean)): [DatabaseState<S>, T[]];
+    }
+
+
+    export interface DbContext<S extends KonroSchema<any, any>> {
+      schema: S;
+      adapter: StorageAdapter;
+      read(): Promise<DatabaseState<S>>;
+      write(state: DatabaseState<S>): Promise<void>;
+      createEmptyState(): DatabaseState<S>;
+
+      query(state: DatabaseState<S>): QueryBuilder<S>;
+      insert<T extends keyof S['tables']>(state: DatabaseState<S>, tableName: T, values: S['create'][T]): [DatabaseState<S>, S['types'][T]];
+      insert<T extends keyof S['tables']>(state: DatabaseState<S>, tableName: T, values: Readonly<S['create'][T]>[]): [DatabaseState<S>, S['types'][T][]];
+      update<T extends keyof S['tables']>(state: DatabaseState<S>, tableName: T): UpdateBuilder<S, S['types'][T]>;
+      delete<T extends keyof S['tables']>(state: DatabaseState<S>, tableName: T): DeleteBuilder<S, S['types'][T]>;
+    }
+
+
+    export const createDatabase = <S extends KonroSchema<any, any>>(options: {
+    schema: S, adapter: StorageAdapter }): DbContext<S> => {
+      const { schema, adapter } = options;
+
+      return {
+        schema,
+        adapter,
+        read: () => adapter.read(schema),
+        write: (state) => adapter.write(state),
+        createEmptyState: () => createEmptyStateImpl(schema),
+
+        insert: (<T extends keyof S['tables']>(
+          state: DatabaseState<S>,
+          tableName: T,
+          values: S['create'][T] | Readonly<S['create'][T]>[]
+        ): [DatabaseState<S>, S['types'][T] | S['types'][T][]] => {
+          const valsArray = Array.isArray(values) ? values : [values];
+          const [newState, inserted] = _insertImpl(state as DatabaseState, schema, tableName as string, valsArray as KRecord[]);
+          const result = Array.isArray(values) ? inserted : inserted[0];
+          return [newState as DatabaseState<S>, result] as [DatabaseState<S>, S['types'][T] | S['types'][T][]];
+        }) as {
+          <T extends keyof S['tables']>(state: DatabaseState<S>, tableName: T, values: S['create'][T]): [DatabaseState<S>, S['types'][T]];
+          <T extends keyof S['tables']>(state: DatabaseState<S>, tableName: T, values: Readonly<S['create'][T]>[]): [DatabaseState<S>, S['types'][T][]];
+        },
+
+        query: (state: DatabaseState<S>): QueryBuilder<S> => ({
+          from: <T extends keyof S['tables']>(tableName: T): ChainedQueryBuilder<S['types'][T]> => {
+            const descriptor: QueryDescriptor = { tableName: tableName as string };
+
+            const builder: ChainedQueryBuilder<S['types'][T]> = {
+              select: (fields) => {
+                descriptor.select = fields;
+                return builder;
+              },
+              where: (predicate) => {
+                descriptor.where = normalizePredicate(predicate as (record: KRecord) => boolean);
+                return builder;
+              },
+              with: (relations) => {
+                descriptor.with = relations as QueryDescriptor['with'];
+                return builder;
+              },
+              limit: (count) => {
+                descriptor.limit = count;
+                return builder;
+              },
+              offset: (count) => {
+                descriptor.offset = count;
+                return builder;
+              },
+              all: (): S['types'][T][] => _queryImpl(state as DatabaseState, schema, descriptor) as unknown as S['types'][T][],
+              first: (): S['types'][T] | null => (_queryImpl(state as DatabaseState, schema, { ...descriptor, limit: 1 })[0] ?? null) as unknown as S['types'][T] | null,
+              aggregate: <TAggs extends Record<string, AggregationDefinition>>(aggregations: TAggs): { [K in keyof TAggs]: number | null } => {
+                const aggDescriptor: AggregationDescriptor = { ...descriptor, aggregations };
+                return _aggregateImpl(state as DatabaseState, schema, aggDescriptor) as { [K in keyof TAggs]: number | null };
+              },
+            };
+            return builder;
+          },
+        }),
+
+        update: <T extends keyof S['tables']>(state: DatabaseState<S>, tableName: T): UpdateBuilder<S, S['types'][T]> => ({
+          set: (data) => ({
+            where: (predicate) => {
+              const [newState, updatedRecords] = _updateImpl(state as DatabaseState, schema, tableName as string, data as Partial<KRecord>, normalizePredicate(predicate as (record: KRecord) => boolean));
+              return [newState as DatabaseState<S>, updatedRecords as S['types'][T][]];
+            },
+          }),
+        }),
+
+        delete: <T extends keyof S['tables']>(state: DatabaseState<S>, tableName: T): DeleteBuilder<S, S['types'][T]> => ({
+          where: (predicate) => {
+            const [newState, deletedRecords] = _deleteImpl(state as DatabaseState, tableName as string, normalizePredicate(predicate as (record: KRecord) => boolean));
+            return [newState as DatabaseState<S>, deletedRecords as S['types'][T][]];
+          },
+        }),
+      };
+    };
+approved: true

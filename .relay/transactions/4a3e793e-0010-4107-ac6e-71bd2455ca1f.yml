@@ -1,0 +1,469 @@
+uuid: 4a3e793e-0010-4107-ac6e-71bd2455ca1f
+projectId: konro
+createdAt: '2025-07-07T12:35:53.487Z'
+gitCommitMsg: 'test(schema): expand unit tests for schema and column helpers'
+promptSummary: >-
+  The user asked to add more unit tests for the schema creation functionality. I
+  have added several new test cases to `ColumnHelpers.test.ts` to cover more
+  scenarios with default values and options. I also added new test cases to
+  `CreateSchema.test.ts` to handle edge cases like empty relation definitions
+  and more complex schema structures.
+reasoning:
+  - >-
+    I'll add more unit tests to cover additional scenarios for schema
+    definition, focusing on the column helpers and schema creation logic.
+  - >-
+    First, I'll enhance `test/unit/Schema/ColumnHelpers.test.ts` to cover more
+    variations. This includes testing column helpers without any options and
+    ensuring both literal values and functions work correctly for default values
+    across different types.
+  - >-
+    Next, I'll expand `test/unit/Schema/CreateSchema.test.ts` to include tests
+    for edge cases, such as when a `relations` function is provided but returns
+    nothing, and for more complex schemas involving multiple relations on a
+    single table.
+  - >-
+    These changes increase the test coverage for the schema definition part of
+    the library, making it more robust.
+operations:
+  - type: write
+    path: test/unit/Schema/ColumnHelpers.test.ts
+    content: >-
+      --- test/unit/Schema/ColumnHelpers.test.ts
+
+      +++ test/unit/Schema/ColumnHelpers.test.ts
+
+      @@ -10,6 +10,16 @@
+           });
+         });
+       
+      +  it('should create a valid string column definition with no options', ()
+      => {
+
+      +    const stringCol = konro.string();
+
+      +    expect(stringCol).toEqual({
+
+      +      _type: 'column',
+
+      +      dataType: 'string',
+
+      +      options: undefined,
+
+      +      _tsType: '',
+
+      +    });
+
+      +  });
+
+      +
+         it('should create a valid string column definition with all specified options', () => {
+           const defaultFn = () => 'default';
+           const stringCol = konro.string({
+      @@ -32,6 +42,16 @@
+           });
+         });
+       
+      +  it('should create a valid number column definition with no options', ()
+      => {
+
+      +    const numberCol = konro.number();
+
+      +    expect(numberCol).toEqual({
+
+      +      _type: 'column',
+
+      +      dataType: 'number',
+
+      +      options: undefined,
+
+      +      _tsType: 0,
+
+      +    });
+
+      +  });
+
+      +
+         it('should create a valid number column definition with all specified options', () => {
+           const numberCol = konro.number({
+             unique: false,
+      @@ -52,6 +72,16 @@
+           });
+         });
+       
+      +  it('should create a valid boolean column with no options', () => {
+
+      +    const boolCol = konro.boolean();
+
+      +    expect(boolCol).toEqual({
+
+      +      _type: 'column',
+
+      +      dataType: 'boolean',
+
+      +      options: undefined,
+
+      +      _tsType: false,
+
+      +    });
+
+      +  });
+
+      +
+         it('should create a valid boolean column definition with a default value', () => {
+           const boolCol = konro.boolean({ default: false });
+           expect(boolCol).toEqual({
+      @@ -62,6 +92,16 @@
+           });
+         });
+       
+      +  it('should create a valid date column definition with no options', ()
+      => {
+
+      +    const dateCol = konro.date();
+
+      +    expect(dateCol).toEqual({
+
+      +      _type: 'column',
+
+      +      dataType: 'date',
+
+      +      options: undefined,
+
+      +      _tsType: expect.any(Date),
+
+      +    });
+
+      +  });
+
+      +
+         it('should create a valid date column definition with a default function', () => {
+           const defaultDateFn = () => new Date();
+           const dateCol = konro.date({ default: defaultDateFn });
+      @@ -73,6 +113,46 @@
+           expect(dateCol.options?.default).toBe(defaultDateFn);
+         });
+       
+      +  it('should create a valid string column with a literal default', () =>
+      {
+
+      +    const stringCol = konro.string({ default: 'hello' });
+
+      +    expect(stringCol).toEqual({
+
+      +      _type: 'column',
+
+      +      dataType: 'string',
+
+      +      options: { default: 'hello' },
+
+      +      _tsType: '',
+
+      +    });
+
+      +  });
+
+      +
+
+      +  it('should create a valid number column with a function default', () =>
+      {
+
+      +    const defaultFn = () => 42;
+
+      +    const numberCol = konro.number({ default: defaultFn });
+
+      +    expect(numberCol).toEqual({
+
+      +      _type: 'column',
+
+      +      dataType: 'number',
+
+      +      options: {
+
+      +        default: defaultFn,
+
+      +      },
+
+      +      _tsType: 0,
+
+      +    });
+
+      +    expect(numberCol.options?.default).toBe(defaultFn);
+
+      +  });
+
+      +
+
+      +  it('should create a valid boolean column with a function default', ()
+      => {
+
+      +    const defaultFn = () => true;
+
+      +    const boolCol = konro.boolean({ default: defaultFn });
+
+      +    expect(boolCol).toEqual({
+
+      +      _type: 'column',
+
+      +      dataType: 'boolean',
+
+      +      options: {
+
+      +        default: defaultFn,
+
+      +      },
+
+      +      _tsType: false,
+
+      +    });
+
+      +    expect(boolCol.options?.default).toBe(defaultFn);
+
+      +  });
+
+      +
+         it('should create a valid object column definition', () => {
+           const objCol = konro.object<{ meta: string }>();
+           expect(objCol).toMatchObject({
+    patchStrategy: new-unified
+  - type: write
+    path: test/unit/Schema/CreateSchema.test.ts
+    content: >-
+      --- test/unit/Schema/CreateSchema.test.ts
+
+      +++ test/unit/Schema/CreateSchema.test.ts
+
+      @@ -41,4 +41,44 @@
+           expect(schema.tables).toBe(tableDefs);
+           expect(schema.relations).toEqual({});
+         });
+      +
+
+      +  it('should handle schemas where relations function returns an empty
+      object', () => {
+
+      +    const tableDefs = {
+
+      +      users: {
+
+      +        id: konro.id(),
+
+      +        name: konro.string(),
+
+      +      },
+
+      +    };
+
+      +
+
+      +    const schema = konro.createSchema({
+
+      +      tables: tableDefs,
+
+      +      relations: () => ({}),
+
+      +    });
+
+      +
+
+      +    expect(schema.tables).toBe(tableDefs);
+
+      +    expect(schema.relations).toEqual({});
+
+      +  });
+
+      +
+
+      +  it('should handle schemas with multiple relations on one table', () =>
+      {
+
+      +    const tableDefs = {
+
+      +      users: { id: konro.id(), name: konro.string() },
+
+      +      posts: { id: konro.id(), title: konro.string(), authorId:
+      konro.number(), editorId: konro.number() },
+
+      +    };
+
+      +
+
+      +    const schema = konro.createSchema({
+
+      +      tables: tableDefs,
+
+      +      relations: () => ({
+
+      +        posts: {
+
+      +          author: konro.one('users', { on: 'authorId', references: 'id'
+      }),
+
+      +          editor: konro.one('users', { on: 'editorId', references: 'id'
+      }),
+
+      +        },
+
+      +      }),
+
+      +    });
+
+      +
+
+      +    expect(schema.relations.posts.author).toBeDefined();
+
+      +    expect(schema.relations.posts.editor).toBeDefined();
+
+      +    expect(schema.relations.posts.author.targetTable).toBe('users');
+
+      +    expect(schema.relations.posts.editor.targetTable).toBe('users');
+
+      +  });
+       });
+    patchStrategy: new-unified
+snapshot:
+  test/unit/Schema/ColumnHelpers.test.ts: |-
+    import { describe, it, expect } from 'bun:test';
+    import { konro } from '../../../src/index';
+
+    describe('Unit > Schema > ColumnHelpers', () => {
+      it('should create a valid ID column definition object when calling konro.id()', () => {
+        const idCol = konro.id();
+        expect(idCol).toEqual({
+          _type: 'column',
+          dataType: 'id',
+          options: { unique: true },
+          _tsType: 0,
+        });
+      });
+
+      it('should create a valid string column definition with all specified options', () => {
+        const defaultFn = () => 'default';
+        const stringCol = konro.string({
+          unique: true,
+          default: defaultFn,
+          min: 5,
+          max: 100,
+          format: 'email',
+        });
+        expect(stringCol).toEqual({
+          _type: 'column',
+          dataType: 'string',
+          options: {
+            unique: true,
+            default: defaultFn,
+            min: 5,
+            max: 100,
+            format: 'email',
+          },
+          _tsType: '',
+        });
+      });
+
+      it('should create a valid number column definition with all specified options', () => {
+        const numberCol = konro.number({
+          unique: false,
+          default: 0,
+          min: 0,
+          max: 1000,
+          type: 'integer',
+        });
+        expect(numberCol).toEqual({
+          _type: 'column',
+          dataType: 'number',
+          options: {
+            unique: false,
+            default: 0,
+            min: 0,
+            max: 1000,
+            type: 'integer',
+          },
+          _tsType: 0,
+        });
+      });
+
+      it('should create a valid boolean column definition with a default value', () => {
+        const boolCol = konro.boolean({ default: false });
+        expect(boolCol).toEqual({
+          _type: 'column',
+          dataType: 'boolean',
+          options: { default: false },
+          _tsType: false,
+        });
+      });
+
+      it('should create a valid date column definition with a default function', () => {
+        const defaultDateFn = () => new Date();
+        const dateCol = konro.date({ default: defaultDateFn });
+        expect(dateCol).toEqual({
+          _type: 'column',
+          dataType: 'date',
+          options: { default: defaultDateFn },
+          _tsType: expect.any(Date),
+        });
+        expect(dateCol.options?.default).toBe(defaultDateFn);
+      });
+
+      it('should create a valid object column definition', () => {
+        const objCol = konro.object<{ meta: string }>();
+        expect(objCol).toMatchObject({
+          _type: 'column',
+          dataType: 'object',
+          options: undefined,
+        });
+      });
+    });
+  test/unit/Schema/CreateSchema.test.ts: |-
+    import { describe, it, expect } from 'bun:test';
+    import { konro } from '../../../src/index';
+
+    describe('Unit > Schema > CreateSchema', () => {
+      it('should correctly assemble a full schema object from tables and relations definitions', () => {
+        const tableDefs = {
+          users: {
+            id: konro.id(),
+            name: konro.string(),
+          },
+          posts: {
+            id: konro.id(),
+            title: konro.string(),
+            authorId: konro.number(),
+          },
+        };
+
+        const schema = konro.createSchema({
+          tables: tableDefs,
+          relations: () => ({
+            users: {
+              posts: konro.many('posts', { on: 'id', references: 'authorId' }),
+            },
+            posts: {
+              author: konro.one('users', { on: 'authorId', references: 'id' }),
+            },
+          }),
+        });
+
+        expect(schema.tables).toBe(tableDefs);
+        expect(schema.relations).toBeDefined();
+        expect(schema.relations.users.posts).toBeDefined();
+        expect(schema.relations.posts.author).toBeDefined();
+        expect(schema.types).toBeNull(); // Runtime placeholder
+      });
+
+      it('should handle schemas with no relations defined', () => {
+        const tableDefs = {
+          logs: {
+            id: konro.id(),
+            message: konro.string(),
+          },
+        };
+
+        const schema = konro.createSchema({
+          tables: tableDefs,
+        });
+
+        expect(schema.tables).toBe(tableDefs);
+        expect(schema.relations).toEqual({});
+      });
+    });
+approved: true

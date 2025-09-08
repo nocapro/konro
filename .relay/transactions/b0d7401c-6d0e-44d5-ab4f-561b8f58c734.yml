@@ -1,0 +1,714 @@
+uuid: b0d7401c-6d0e-44d5-ab4f-561b8f58c734
+projectId: konro
+createdAt: '2025-07-09T06:35:43.239Z'
+linesAdded: 4
+linesRemoved: 4
+gitCommitMsg: 'fix(types): Resolve TS errors in on-demand and cascade logic'
+promptSummary: >-
+  Fix several TypeScript errors related to `noUncheckedIndexedAccess` and type
+  inference in cascade operations.
+reasoning:
+  - >-
+    I've analyzed the TypeScript errors and will provide the necessary patches
+    to fix them. Here is my step-by-step plan:
+  - >-
+    1.  **`src/db.ts`:** In the `createMultiFileOnDemandDbContext` function, the
+    `del` operation has a type error when writing changed tables back to the
+    filesystem. This is due to the `noUncheckedIndexedAccess` compiler option,
+    which correctly flags that accessing an object by a string key could result
+    in `undefined`. However, the logic ensures that the key exists in
+    `newState`. I will add a non-null assertion (`!`) to inform TypeScript that
+    the value will not be `undefined`.
+  - >-
+    2.  **`src/operations.ts`:** This file has three related errors within the
+    `applyCascades` function:
+  - >-
+    *   **Type Error in Predicate:** A confusing type error `Argument of type
+    'unknown' is not assignable to parameter of type '{} | null'` occurs when
+    creating the predicate for cascading operations. The value
+    `record[targetKey]` is of type `unknown`, and `sourceKeySet.has()` seems to
+    have a strangely inferred parameter type. I'll cast `record[targetKey]` to
+    `any` to resolve this complex type inference issue.
+  - >-
+    *   **Type Mismatch on Cascade:** When a cascading delete or update occurs,
+    the `_deleteImpl` and `_updateImpl` functions return a `DatabaseState`
+    object with a generic type. This is then assigned to `nextState`, which has
+    a more specific `DatabaseState<S>` type, causing an assignment error. I will
+    cast the `newState` to `DatabaseState<S>` in both the `CASCADE` and `SET
+    NULL` branches to fix this mismatch, as we know from the context that the
+    type is correct.
+  - >-
+    I will combine all changes for `src/operations.ts` into a single patch for
+    efficiency.
+  - 'Here are the code patches:'
+  - First, I'll patch `src/db.ts` to fix the `noUncheckedIndexedAccess` issue.
+  - >-
+    Next, I'll apply the fixes to `src/operations.ts` to resolve the errors in
+    the `applyCascades` function.
+  - These changes should resolve all the reported TypeScript errors.
+operations:
+  - type: write
+    path: src/db.ts
+    content: >-
+      --- src/db.ts
+
+      +++ src/db.ts
+
+      @@ -315,7 +315,7 @@
+             const changedTableNames = Object.keys(newState).filter(key => newState[key as keyof typeof newState] !== state[key as keyof typeof state]);
+             
+             await Promise.all(
+      -        changedTableNames.map(name => writeTableState(name, newState[name
+      as keyof typeof newState]))
+
+      +        changedTableNames.map(name => writeTableState(name, newState[name
+      as keyof typeof newState]!))
+             );
+       
+             return deletedRecords as S['base'][T][];
+    patchStrategy: new-unified
+  - type: write
+    path: src/operations.ts
+    content: >-
+      --- src/operations.ts
+
+      +++ src/operations.ts
+
+      @@ -378,16 +378,16 @@
+           const sourceKeyValues = deletedRecords.map(r => r[sourceKey]).filter(v => v !== undefined);
+           if (sourceKeyValues.length === 0) continue;
+       
+           const sourceKeySet = new Set(sourceKeyValues);
+      -    const predicate = (record: KRecord) =>
+      sourceKeySet.has(record[targetKey]);
+
+      +    const predicate = (record: KRecord) =>
+      sourceKeySet.has(record[targetKey] as any);
+       
+           if (relationDef.onDelete === 'CASCADE') {
+             // Recursively delete
+             const [newState, ] = _deleteImpl(nextState, schema, targetTable, predicate);
+      -      nextState = newState;
+
+      +      nextState = newState as DatabaseState<S>;
+           } else if (relationDef.onDelete === 'SET NULL') {
+             // Update FK to null
+             const [newState, ] = _updateImpl(nextState, schema, targetTable, { [targetKey]: null }, predicate);
+      -      nextState = newState;
+
+      +      nextState = newState as DatabaseState<S>;
+           }
+         }
+    patchStrategy: new-unified
+snapshot:
+  src/db.ts: >-
+    import path from 'path';
+
+    import { AggregationDefinition, ColumnDefinition, KonroSchema,
+    RelationDefinition } from './schema';
+
+    import { StorageAdapter, FileStorageAdapter } from './adapter';
+
+    import { DatabaseState, KRecord, TableState } from './types';
+
+    import { _queryImpl, _insertImpl, _updateImpl, _deleteImpl, createEmptyState
+    as createEmptyStateImpl, QueryDescriptor, _aggregateImpl,
+    AggregationDescriptor } from './operations';
+
+    import { createPredicateFromPartial } from './utils/predicate.util';
+
+    import { KonroError, KonroStorageError } from './utils/error.util';
+
+    import { writeAtomic } from './fs';
+
+
+    // A helper to normalize a predicate argument
+
+    const normalizePredicate = <T extends KRecord>(
+      predicate: Partial<T> | ((record: T) => boolean)
+    ): ((record: KRecord) => boolean) =>
+      // The cast is necessary due to function argument contravariance.
+      // The internal operations work on the wider `KRecord`, while the fluent API provides the specific `T`.
+      (typeof predicate === 'function' ? predicate : createPredicateFromPartial(predicate)) as (record: KRecord) => boolean;
+
+    // --- TYPE HELPERS for Fluent API ---
+
+
+    type RelatedModel<T> = T extends (infer R)[] ? R : T extends (infer R |
+    null) ? R : T;
+
+
+    // TAll is the full relational model type, e.g. schema.types.users
+
+    type WithArgument<TAll> = { // e.g. TAll = S['types']['users']
+      [K in keyof TAll as NonNullable<TAll[K]> extends any[] | object ? K : never]?: boolean | ({
+        where?: (record: RelatedModel<NonNullable<TAll[K]>>) => boolean;
+      } & (
+        | { select: Record<string, ColumnDefinition<unknown>>; with?: never }
+        | { select?: never; with?: WithArgument<RelatedModel<NonNullable<TAll[K]>>> }
+      ));
+    };
+
+
+    type ResolveWith<
+      S extends KonroSchema<any, any>,
+      TName extends keyof S['tables'],
+      TWith extends WithArgument<S['types'][TName]>
+    > = { // TName='users', TWith={posts: {with: {author: true}}}
+        [K in keyof TWith & keyof S['relations'][TName]]:
+            S['relations'][TName][K] extends { relationType: 'many' }
+                ? ( // 'many' relation -> array result. K = 'posts'
+                    TWith[K] extends { select: infer TSelect }
+                        ? ({ [P in keyof TSelect]: InferColumnType<TSelect[P]> })[]
+                        : TWith[K] extends { with: infer TNestedWith }
+                            // S['relations']['users']['posts']['targetTable'] = 'posts'
+                            ? (S['base'][S['relations'][TName][K]['targetTable']] & ResolveWith<S, S['relations'][TName][K]['targetTable'], TNestedWith & WithArgument<S['types'][S['relations'][TName][K]['targetTable']]>>)[]
+                            // posts: true.
+                            : S['base'][S['relations'][TName][K]['targetTable']][]
+                  )
+                : S['relations'][TName][K] extends { relationType: 'one' }
+                    ? ( // 'one' relation -> nullable object result
+                        TWith[K] extends { select: infer TSelect }
+                            ? ({ [P in keyof TSelect]: InferColumnType<TSelect[P]> }) | null
+                            : TWith[K] extends { with: infer TNestedWith }
+                                ? (S['base'][S['relations'][TName][K]['targetTable']] & ResolveWith<S, S['relations'][TName][K]['targetTable'], TNestedWith & WithArgument<S['types'][S['relations'][TName][K]['targetTable']]>>) | null
+                                : S['base'][S['relations'][TName][K]['targetTable']] | null
+                      )
+                    : never
+    };
+
+
+    // InferColumnType is not exported from schema, so we need it here too.
+
+    type InferColumnType<C> = C extends ColumnDefinition<infer T> ? T : never;
+
+
+    // --- IN-MEMORY API TYPES (STATEFUL) ---
+
+
+    interface ChainedQueryBuilder<S extends KonroSchema<any, any>, TName extends
+    keyof S['tables'], TReturn> {
+      select(fields: Record<string, ColumnDefinition<unknown> | RelationDefinition>): this;
+      where(predicate: Partial<S['base'][TName]> | ((record: S['base'][TName]) => boolean)): this;
+      withDeleted(): this;
+      with<W extends WithArgument<S['types'][TName]>>(relations: W): ChainedQueryBuilder<S, TName, TReturn & ResolveWith<S, TName, W>>;
+      limit(count: number): this;
+      offset(count: number): this;
+      all(): TReturn[];
+      first(): TReturn | null;
+      aggregate<TAggs extends Record<string, AggregationDefinition>>(
+        aggregations: TAggs
+      ): { [K in keyof TAggs]: number | null };
+    }
+
+
+    interface QueryBuilder<S extends KonroSchema<any, any>> {
+      from<T extends keyof S['tables']>(tableName: T): ChainedQueryBuilder<S, T, S['base'][T]>;
+    }
+
+
+    interface UpdateBuilder<S extends KonroSchema<any, any>, TBase, TCreate> {
+      set(data: Partial<TCreate>): {
+        where(predicate: Partial<TBase> | ((record: TBase) => boolean)): [DatabaseState<S>, TBase[]];
+      };
+    }
+
+
+    interface DeleteBuilder<S extends KonroSchema<any, any>, TBase> {
+      where(predicate: Partial<TBase> | ((record: TBase) => boolean)): [DatabaseState<S>, TBase[]];
+    }
+
+
+    export interface InMemoryDbContext<S extends KonroSchema<any, any>> {
+      schema: S;
+      adapter: StorageAdapter;
+      read(): Promise<DatabaseState<S>>;
+      write(state: DatabaseState<S>): Promise<void>;
+      createEmptyState(): DatabaseState<S>;
+
+      query(state: DatabaseState<S>): QueryBuilder<S>;
+      insert<T extends keyof S['tables']>(state: DatabaseState<S>, tableName: T, values: S['create'][T]): [DatabaseState<S>, S['base'][T]];
+      insert<T extends keyof S['tables']>(state: DatabaseState<S>, tableName: T, values: Readonly<S['create'][T]>[]): [DatabaseState<S>, S['base'][T][]];
+      update<T extends keyof S['tables']>(state: DatabaseState<S>, tableName: T): UpdateBuilder<S, S['base'][T], S['create'][T]>;
+      delete<T extends keyof S['tables']>(state: DatabaseState<S>, tableName: T): DeleteBuilder<S, S['base'][T]>;
+    }
+
+
+
+    // --- ON-DEMAND API TYPES (STATELESS & ASYNC) ---
+
+
+    interface OnDemandChainedQueryBuilder<S extends KonroSchema<any, any>, TName
+    extends keyof S['tables'], TReturn> {
+      select(fields: Record<string, ColumnDefinition<unknown> | RelationDefinition>): this;
+      where(predicate: Partial<S['base'][TName]> | ((record: S['base'][TName]) => boolean)): this;
+      withDeleted(): this;
+      with<W extends WithArgument<S['types'][TName]>>(relations: W): OnDemandChainedQueryBuilder<S, TName, TReturn & ResolveWith<S, TName, W>>;
+      limit(count: number): this;
+      offset(count: number): this;
+      all(): Promise<TReturn[]>;
+      first(): Promise<TReturn | null>;
+      aggregate<TAggs extends Record<string, AggregationDefinition>>(
+        aggregations: TAggs
+      ): Promise<{ [K in keyof TAggs]: number | null }>;
+    }
+
+
+    interface OnDemandQueryBuilder<S extends KonroSchema<any, any>> {
+      from<T extends keyof S['tables']>(tableName: T): OnDemandChainedQueryBuilder<S, T, S['base'][T]>;
+    }
+
+
+    interface OnDemandUpdateBuilder<TBase, TCreate> {
+      set(data: Partial<TCreate>): {
+        where(predicate: Partial<TBase> | ((record: TBase) => boolean)): Promise<TBase[]>;
+      };
+    }
+
+
+    interface OnDemandDeleteBuilder<TBase> {
+      where(predicate: Partial<TBase> | ((record: TBase) => boolean)): Promise<TBase[]>;
+    }
+
+
+    export interface OnDemandDbContext<S extends KonroSchema<any, any>> {
+      schema: S;
+      adapter: StorageAdapter;
+      read(): Promise<never>; // Not supported in on-demand mode
+      write(): Promise<never>; // Not supported in on-demand mode
+      createEmptyState(): DatabaseState<S>;
+
+      query(): OnDemandQueryBuilder<S>;
+      insert<T extends keyof S['tables']>(tableName: T, values: S['create'][T]): Promise<S['base'][T]>;
+      insert<T extends keyof S['tables']>(tableName: T, values: Readonly<S['create'][T]>[]): Promise<S['base'][T][]>;
+      update<T extends keyof S['tables']>(tableName: T): OnDemandUpdateBuilder<S['base'][T], S['create'][T]>;
+      delete<T extends keyof S['tables']>(tableName: T): OnDemandDeleteBuilder<S['base'][T]>;
+    }
+
+
+    // --- DbContext Union Type ---
+
+    export type DbContext<S extends KonroSchema<any, any>> =
+    InMemoryDbContext<S> | OnDemandDbContext<S>;
+
+
+    // --- CORE LOGIC (STATELESS & PURE) ---
+
+
+    /**
+     * Creates the core, stateless database operations.
+     * These operations are pure functions that take a database state and return a new state,
+     * forming the foundation for both in-memory and on-demand modes.
+     */
+    function createCoreDbContext<S extends KonroSchema<any, any>>(schema: S) {
+      const query = (state: DatabaseState<S>): QueryBuilder<S> => ({
+        from: <TName extends keyof S['tables']>(tableName: TName): ChainedQueryBuilder<S, TName, S['base'][TName]> => {
+          const createBuilder = <TReturn>(currentDescriptor: QueryDescriptor): ChainedQueryBuilder<S, TName, TReturn> => ({
+            select(fields) { return createBuilder<TReturn>({ ...currentDescriptor, select: fields }); },
+            where(predicate) { return createBuilder<TReturn>({ ...currentDescriptor, where: normalizePredicate(predicate as any) }); },
+            withDeleted() { return createBuilder<TReturn>({ ...currentDescriptor, withDeleted: true }); },
+            with<W extends WithArgument<S['types'][TName]>>(relations: W) {
+              const newWith = { ...currentDescriptor.with, ...(relations as QueryDescriptor['with']) };
+              return createBuilder<TReturn & ResolveWith<S, TName, W>>({ ...currentDescriptor, with: newWith });
+            },
+            limit(count) { return createBuilder<TReturn>({ ...currentDescriptor, limit: count }); },
+            offset(count) { return createBuilder<TReturn>({ ...currentDescriptor, offset: count }); },
+            all: (): TReturn[] => _queryImpl(state as DatabaseState, schema, currentDescriptor) as any,
+            first: (): TReturn | null => (_queryImpl(state as DatabaseState, schema, { ...currentDescriptor, limit: 1 })[0] ?? null) as any,
+            aggregate: (aggregations) => {
+              const aggDescriptor: AggregationDescriptor = { ...currentDescriptor, aggregations };
+              return _aggregateImpl(state as DatabaseState, schema, aggDescriptor) as any;
+            },
+          });
+          return createBuilder<S['base'][TName]>({ tableName: tableName as string });
+        },
+      });
+
+      const insert = <T extends keyof S['tables']>(
+        state: DatabaseState<S>, tableName: T, values: S['create'][T] | Readonly<S['create'][T]>[]
+      ): [DatabaseState<S>, S['base'][T] | S['base'][T][]] => {
+        const valsArray = Array.isArray(values) ? values : [values];
+        const [newState, inserted] = _insertImpl(state as DatabaseState, schema, tableName as string, valsArray as KRecord[]);
+        const result = Array.isArray(values) ? inserted : inserted[0];
+        return [newState as DatabaseState<S>, result] as [DatabaseState<S>, S['base'][T] | S['base'][T][]];
+      };
+
+      const update = <T extends keyof S['tables']>(state: DatabaseState<S>, tableName: T): UpdateBuilder<S, S['base'][T], S['create'][T]> => ({
+        set: (data) => ({
+          where: (predicate) => {
+            const [newState, updatedRecords] = _updateImpl(state as DatabaseState, schema, tableName as string, data as Partial<KRecord>, normalizePredicate(predicate as any));
+            return [newState as DatabaseState<S>, updatedRecords as S['base'][T][]];
+          },
+        }),
+      });
+
+      const del = <T extends keyof S['tables']>(state: DatabaseState<S>, tableName: T): DeleteBuilder<S, S['base'][T]> => ({
+        where: (predicate) => {
+          const [newState, deletedRecords] = _deleteImpl(state as DatabaseState, schema, tableName as string, normalizePredicate(predicate as any));
+          return [newState as DatabaseState<S>, deletedRecords as S['base'][T][]];
+        },
+      });
+
+      return { query, insert, update, delete: del };
+    }
+
+
+    // --- ON-DEMAND CONTEXT (STATEFUL WRAPPER) ---
+
+
+    function createMultiFileOnDemandDbContext<S extends KonroSchema<any, any>>(
+      schema: S,
+      adapter: FileStorageAdapter,
+      core: ReturnType<typeof createCoreDbContext<S>>
+    ): OnDemandDbContext<S> {
+      const { dir } = adapter.options.multi!;
+
+      const readTableState = async (tableName: string): Promise<TableState> => {
+        const filepath = path.join(dir, `${tableName}${adapter.fileExtension}`);
+        const data = await adapter.fs.readFile(filepath);
+        if (!data) return { records: [], meta: { lastId: 0 } };
+        try {
+          return adapter.serializer.parse(data, schema.tables[tableName]);
+        } catch (e: any) {
+          throw KonroStorageError(`Failed to parse file at "${filepath}". It may be corrupt or not a valid ${adapter.options.format} file. Original error: ${e.message}`);
+        }
+      };
+
+      const writeTableState = async (tableName: string, tableState: TableState): Promise<void> => {
+        await adapter.fs.mkdir(dir, { recursive: true });
+        const filepath = path.join(dir, `${tableName}${adapter.fileExtension}`);
+        const content = adapter.serializer.stringify(tableState);
+        await writeAtomic(filepath, content, adapter.fs);
+      };
+      
+      // For queries with relations, we need the full state.
+      const getFullState = async (): Promise<DatabaseState<S>> => {
+        const state = createEmptyStateImpl(schema);
+        await Promise.all(Object.keys(schema.tables).map(async (tableName) => {
+          (state as any)[tableName] = await readTableState(tableName);
+        }));
+        return state;
+      }
+
+      // A generic handler for CUD operations that reads one table, performs an action, and writes it back.
+      const performCud = async <TResult>(tableName: string, action: (state: DatabaseState<S>) => [DatabaseState<S>, TResult]): Promise<TResult> => {
+        const state = createEmptyStateImpl(schema);
+        (state as any)[tableName] = await readTableState(tableName);
+        const [newState, result] = action(state as DatabaseState<S>);
+        
+        // Check if the operation produced a result (e.g., an array of inserted/updated/deleted records)
+        const hasChanges = Array.isArray(result) ? result.length > 0 : result !== null;
+        if (hasChanges) {
+          const newTableState = newState[tableName as string];
+          // This check satisfies the `noUncheckedIndexedAccess` compiler option.
+          // Our CUD logic ensures this state will always exist after a change.
+          if (newTableState) {
+            await writeTableState(tableName, newTableState);
+          }
+        }
+        return result;
+      };
+
+      const query = (): OnDemandQueryBuilder<S> => ({
+        from: <TName extends keyof S['tables']>(tableName: TName): OnDemandChainedQueryBuilder<S, TName, S['base'][TName]> => {
+          // The query builder for on-demand must be separate because its terminal methods are async.
+          const createBuilder = <TReturn>(currentDescriptor: QueryDescriptor): OnDemandChainedQueryBuilder<S, TName, TReturn> => ({
+            select(fields) { return createBuilder<TReturn>({ ...currentDescriptor, select: fields }); },
+            where(predicate) { return createBuilder<TReturn>({ ...currentDescriptor, where: normalizePredicate(predicate as any) }); },
+            withDeleted() { return createBuilder<TReturn>({ ...currentDescriptor, withDeleted: true }); },
+            with<W extends WithArgument<S['types'][TName]>>(relations: W) {
+              const newWith = { ...currentDescriptor.with, ...(relations as QueryDescriptor['with']) };
+              return createBuilder<TReturn & ResolveWith<S, TName, W>>({ ...currentDescriptor, with: newWith });
+            },
+            limit(count) { return createBuilder<TReturn>({ ...currentDescriptor, limit: count }); },
+            offset(count) { return createBuilder<TReturn>({ ...currentDescriptor, offset: count }); },
+            all: async (): Promise<TReturn[]> => {
+              const state = await getFullState();
+              return _queryImpl(state, schema, currentDescriptor) as any;
+            },
+            first: async (): Promise<TReturn | null> => {
+              const state = await getFullState();
+              return (_queryImpl(state, schema, { ...currentDescriptor, limit: 1 })[0] ?? null) as any;
+            },
+            aggregate: async (aggregations) => {
+              const state = await getFullState();
+              const aggDescriptor: AggregationDescriptor = { ...currentDescriptor, aggregations };
+              return _aggregateImpl(state, schema, aggDescriptor) as any;
+            },
+          });
+          return createBuilder<S['base'][TName]>({ tableName: tableName as string });
+        },
+      });
+
+      const insert = <T extends keyof S['tables']>(tableName: T, values: S['create'][T] | Readonly<S['create'][T]>[]): Promise<any> => 
+        performCud(tableName as string, (state) => core.insert(state, tableName, values as any));
+
+      const update = <T extends keyof S['tables']>(tableName: T): OnDemandUpdateBuilder<S['base'][T], S['create'][T]> => ({
+        set: (data) => ({
+          where: (predicate) => performCud(tableName as string, (state) => core.update(state, tableName).set(data).where(predicate as any)) as Promise<S['base'][T][]>,
+        }),
+      });
+
+      const del = <T extends keyof S['tables']>(tableName: T): OnDemandDeleteBuilder<S['base'][T]> => ({
+        where: async (predicate) => {
+          // Cascading deletes require the full state.
+          const state = await getFullState();
+          const [newState, deletedRecords] = core.delete(state, tableName).where(predicate as any);
+
+          // Find changed tables and write them back
+          const changedTableNames = Object.keys(newState).filter(key => newState[key as keyof typeof newState] !== state[key as keyof typeof state]);
+          
+          await Promise.all(
+            changedTableNames.map(name => writeTableState(name, newState[name as keyof typeof newState]))
+          );
+
+          return deletedRecords as S['base'][T][];
+        },
+      });
+
+      const notSupported = () => Promise.reject(KonroError("This method is not supported in 'on-demand' mode."));
+
+      return {
+        schema,
+        adapter,
+        read: notSupported,
+        write: notSupported,
+        createEmptyState: () => createEmptyStateImpl(schema),
+        query,
+        insert,
+        update,
+        delete: del,
+      };
+    }
+
+
+    function createPerRecordOnDemandDbContext<S extends KonroSchema<any, any>>(
+      schema: S,
+      adapter: FileStorageAdapter,
+      core: ReturnType<typeof createCoreDbContext<S>>
+    ): OnDemandDbContext<S> {
+      const { dir } = adapter.options.perRecord!;
+      const { fs, serializer, fileExtension } = adapter;
+
+      const getTableDir = (tableName: string) => path.join(dir, tableName);
+      const getRecordPath = (tableName: string, recordId: string | number) => path.join(getTableDir(tableName), `${recordId}${fileExtension}`);
+      const getMetaPath = (tableName: string) => path.join(getTableDir(tableName), '_meta.json');
+
+      const getIdColumn = (tableName: string) => {
+        const tableSchema = schema.tables[tableName];
+        const idColumn = Object.keys(tableSchema).find((key) => tableSchema[key]?.dataType === 'id');
+        if (!idColumn) {
+          throw KonroError(`Table "${tableName}" must have an 'id' column to be used with 'per-record' storage.`);
+        }
+        return idColumn;
+      };
+
+      const readMeta = async (tableName: string): Promise<{ lastId: number }> => {
+        const metaContent = await fs.readFile(getMetaPath(tableName));
+        return metaContent ? JSON.parse(metaContent) : { lastId: 0 };
+      };
+
+      const writeMeta = async (tableName: string, meta: { lastId: number }): Promise<void> => {
+        await fs.mkdir(getTableDir(tableName), { recursive: true });
+        await writeAtomic(getMetaPath(tableName), JSON.stringify(meta, null, 2), fs);
+      };
+
+      const readTableState = async (tableName: string): Promise<TableState> => {
+        const tableDir = getTableDir(tableName);
+        await fs.mkdir(tableDir, { recursive: true });
+
+        const meta = await readMeta(tableName);
+        const files = await fs.readdir(tableDir);
+        const recordFiles = files.filter((f) => !f.startsWith('_meta'));
+
+        const records = (
+          await Promise.all(
+            recordFiles.map(async (file) => {
+              const content = await fs.readFile(path.join(tableDir, file));
+              return content ? serializer.parse<KRecord>(content) : null;
+            })
+          )
+        ).filter((r): r is KRecord => r !== null);
+
+        return { records, meta };
+      };
+
+      const getFullState = async (): Promise<DatabaseState<S>> => {
+        const state = createEmptyStateImpl(schema);
+        await Promise.all(
+          Object.keys(schema.tables).map(async (tableName) => {
+            (state as any)[tableName] = await readTableState(tableName);
+          })
+        );
+        return state;
+      };
+
+      const query = (): OnDemandQueryBuilder<S> => ({
+        from: <TName extends keyof S['tables']>(tableName: TName): OnDemandChainedQueryBuilder<S, TName, S['base'][TName]> => {
+          const createBuilder = <TReturn>(currentDescriptor: QueryDescriptor): OnDemandChainedQueryBuilder<S, TName, TReturn> => ({
+            select(fields) { return createBuilder<TReturn>({ ...currentDescriptor, select: fields }); },
+            where(predicate) { return createBuilder<TReturn>({ ...currentDescriptor, where: normalizePredicate(predicate as any) }); },
+            withDeleted() { return createBuilder<TReturn>({ ...currentDescriptor, withDeleted: true }); },
+            with<W extends WithArgument<S['types'][TName]>>(relations: W) {
+              const newWith = { ...currentDescriptor.with, ...(relations as QueryDescriptor['with']) };
+              return createBuilder<TReturn & ResolveWith<S, TName, W>>({ ...currentDescriptor, with: newWith });
+            },
+            limit(count) { return createBuilder<TReturn>({ ...currentDescriptor, limit: count }); },
+            offset(count) { return createBuilder<TReturn>({ ...currentDescriptor, offset: count }); },
+            all: async (): Promise<TReturn[]> => {
+              const state = await getFullState();
+              return _queryImpl(state, schema, currentDescriptor) as any;
+            },
+            first: async (): Promise<TReturn | null> => {
+              const state = await getFullState();
+              return (_queryImpl(state, schema, { ...currentDescriptor, limit: 1 })[0] ?? null) as any;
+            },
+            aggregate: async (aggregations) => {
+              const state = await getFullState();
+              const aggDescriptor: AggregationDescriptor = { ...currentDescriptor, aggregations };
+              return _aggregateImpl(state, schema, aggDescriptor) as any;
+            },
+          });
+          return createBuilder<S['base'][TName]>({ tableName: tableName as string });
+        },
+      });
+
+      const insert = async <T extends keyof S['tables']>(tableName: T, values: S['create'][T] | Readonly<S['create'][T]>[]): Promise<any> => {
+        const tableNameStr = tableName as string;
+        const meta = await readMeta(tableNameStr);
+        const idColumn = getIdColumn(tableNameStr);
+
+        // We only need a shallow table state for insert, no records needed for validation context.
+        const tempState: DatabaseState = { [tableNameStr]: { records: [], meta } };
+        const [newState, insertedResult] = core.insert(tempState as any, tableName, values as any);
+
+        const insertedAsArray = Array.isArray(insertedResult) ? insertedResult : insertedResult ? [insertedResult] : [];
+
+        if (insertedAsArray.length === 0) {
+          return insertedResult; // Return original empty array or null
+        }
+
+        await Promise.all(
+          (insertedAsArray as KRecord[]).map((rec) => {
+            const recordPath = getRecordPath(tableNameStr, rec[idColumn] as any);
+            return writeAtomic(recordPath, serializer.stringify(rec), fs);
+          })
+        );
+
+        const newMeta = (newState as DatabaseState)[tableNameStr]?.meta;
+        if (newMeta && newMeta.lastId !== meta.lastId) {
+          await writeMeta(tableNameStr, newMeta);
+        }
+
+        return insertedResult;
+      };
+
+      const update = <T extends keyof S['tables']>(tableName: T): OnDemandUpdateBuilder<S['base'][T], S['create'][T]> => ({
+        set: (data) => ({
+          where: async (predicate) => {
+            const tableNameStr = tableName as string;
+            const tableState = await readTableState(tableNameStr);
+            const idColumn = getIdColumn(tableNameStr);
+            const [, updatedRecords] = core.update({ [tableNameStr]: tableState } as any, tableName).set(data).where(predicate as any);
+
+            if (updatedRecords.length > 0) {
+              await Promise.all(
+                (updatedRecords as KRecord[]).map((rec) => writeAtomic(getRecordPath(tableNameStr, rec[idColumn] as any), serializer.stringify(rec), fs))
+              );
+            }
+            return updatedRecords as S['base'][T][];
+          },
+        }),
+      });
+
+      const del = <T extends keyof S['tables']>(tableName: T): OnDemandDeleteBuilder<S['base'][T]> => ({
+        where: async (predicate) => {
+          const state = await getFullState();
+          const [newState, deletedRecords] = core.delete(state, tableName).where(predicate as any);
+
+          const changePromises: Promise<any>[] = [];
+
+          for (const tName of Object.keys(schema.tables)) {
+            const oldTableState = state[tName as keyof typeof state]!;
+            const newTableState = newState[tName as keyof typeof newState]!;
+
+            if (oldTableState === newTableState) continue;
+
+            const tableDir = getTableDir(tName);
+            changePromises.push(fs.mkdir(tableDir, { recursive: true }));
+
+            if (JSON.stringify(oldTableState.meta) !== JSON.stringify(newTableState.meta)) {
+              changePromises.push(writeMeta(tName, newTableState.meta));
+            }
+
+            const tIdColumn = getIdColumn(tName);
+            const oldRecordsMap = new Map(oldTableState.records.map(r => [r[tIdColumn], r]));
+            const newRecordsMap = new Map(newTableState.records.map(r => [r[tIdColumn], r]));
+            
+            for (const [id, record] of newRecordsMap.entries()) {
+                const oldRecord = oldRecordsMap.get(id);
+                // Write if new or record object identity has changed
+                if (!oldRecord || oldRecord !== record) {
+                    changePromises.push(writeAtomic(getRecordPath(tName, id as any), serializer.stringify(record), fs));
+                }
+            }
+            
+            for (const id of oldRecordsMap.keys()) {
+                if (!newRecordsMap.has(id)) { // Deleted record
+                    changePromises.push(fs.unlink(getRecordPath(tName, id as any)));
+                }
+            }
+          }
+
+          await Promise.all(changePromises);
+
+          return deletedRecords as S['base'][T][];
+        },
+      });
+
+      const notSupported = () => Promise.reject(KonroError("This method is not supported in 'on-demand' mode."));
+
+      return { schema, adapter, createEmptyState: () => createEmptyStateImpl(schema), read: notSupported, write: notSupported, query, insert, update, delete: del };
+    }
+
+
+
+    // --- DATABASE FACTORY ---
+
+
+    export function createDatabase<
+      S extends KonroSchema<any, any>,
+      TAdapter extends StorageAdapter,
+    >(
+      options: { schema: S; adapter: TAdapter }
+    ): TAdapter['mode'] extends 'on-demand' ? OnDemandDbContext<S> :
+    InMemoryDbContext<S>;
+
+    export function createDatabase<S extends KonroSchema<any, any>>(
+      options: { schema: S; adapter: StorageAdapter }
+    ): DbContext<S> {
+      const { schema, adapter } = options;
+      const core = createCoreDbContext(schema);
+
+      if (adapter.mode === 'on-demand') {
+        const fileAdapter = adapter as FileStorageAdapter; // We can be sure it's a FileStorageAdapter due to checks
+        if (fileAdapter.options.multi) {
+          return createMultiFileOnDemandDbContext(schema, fileAdapter, core);
+        }
+        if (fileAdapter.options.perRecord) {
+          return createPerRecordOnDemandDbContext(schema, fileAdapter, core);
+        }
+        throw KonroError("The 'on-demand' mode requires a 'multi-file' or 'per-record' storage strategy.");
+      }
+
+      // For in-memory, just combine the core logic with the adapter and I/O methods.
+      return {
+        ...core,
+        schema, adapter,
+        read: () => adapter.read(schema),
+        write: (state) => adapter.write(state, schema),
+        createEmptyState: () => createEmptyStateImpl(schema),
+      } as InMemoryDbContext<S>;
+    }
+  src/operations.ts: "import { randomUUID } from 'crypto';\r\nimport { DatabaseState, KRecord } from './types';\r\nimport { KonroSchema, RelationDefinition, ColumnDefinition, AggregationDefinition } from './schema';\r\nimport { KonroError, KonroValidationError } from './utils/error.util';\r\n\r\n// --- HELPERS ---\r\n\r\n\r\n/** Creates a pristine, empty database state from a schema. */\r\nexport const createEmptyState = <S extends KonroSchema<any, any>>(schema: S): DatabaseState<S> => {\r\n  const state = {} as DatabaseState<S>;\r\n  for (const tableName in schema.tables) {\r\n    // This is a controlled cast, safe because we are iterating over the schema's tables.\r\n    (state as any)[tableName] = { records: [], meta: { lastId: 0 } };\r\n  }\r\n  return state;\r\n};\r\n\r\n// --- QUERY ---\r\n\r\ninterface WithOptions {\r\n  select?: Record<string, ColumnDefinition<unknown>>;\r\n  where?: (record: KRecord) => boolean;\r\n  with?: WithClause;\r\n}\r\ntype WithClause = Record<string, boolean | WithOptions>;\r\n\r\nexport interface QueryDescriptor {\r\n  tableName: string;\r\n  select?: Record<string, ColumnDefinition<unknown> | RelationDefinition>;\r\n  where?: (record: KRecord) => boolean;\r\n  with?: WithClause;\r\n  limit?: number;\r\n  offset?: number;\r\n  withDeleted?: boolean;\r\n}\r\n\r\nexport interface AggregationDescriptor extends QueryDescriptor {\r\n  aggregations: Record<string, AggregationDefinition>;\r\n}\r\n\r\nconst _processWith = <S extends KonroSchema<any, any>>(\r\n  recordsToProcess: KRecord[],\r\n  currentTableName: string,\r\n  withClause: WithClause,\r\n  schema: S,\r\n  state: DatabaseState\r\n): KRecord[] => {\r\n  // structuredClone is important to avoid mutating the records from the previous recursion level or the main state.\r\n  const resultsWithRelations = structuredClone(recordsToProcess);\r\n\r\n  for (const record of resultsWithRelations) {\r\n    for (const relationName in withClause) {\r\n      const relationDef = schema.relations[currentTableName]?.[relationName];\r\n      if (!relationDef) continue;\r\n\r\n      const withOpts = withClause[relationName];\r\n      // Skip if the value is `false` or something not truthy (though types should prevent this)\r\n      if (!withOpts) continue;\r\n\r\n      const relatedRecords = findRelatedRecords(state, record, relationDef);\r\n\r\n      const nestedWhere = typeof withOpts === 'object' ? withOpts.where : undefined;\r\n      const nestedSelect = typeof withOpts === 'object' ? withOpts.select : undefined;\r\n      const nestedWith = typeof withOpts === 'object' ? withOpts.with : undefined;\r\n\r\n      let processedRelatedRecords = nestedWhere ? relatedRecords.filter(nestedWhere) : [...relatedRecords];\r\n\r\n      // Recursively process deeper relations first\r\n      if (nestedWith && processedRelatedRecords.length > 0) {\r\n        processedRelatedRecords = _processWith(\r\n          processedRelatedRecords,\r\n          relationDef.targetTable,\r\n          nestedWith,\r\n          schema,\r\n          state\r\n        );\r\n      }\r\n\r\n      // Then, apply select on the (potentially already processed) related records\r\n      if (nestedSelect) {\r\n        const targetTableSchema = schema.tables[relationDef.targetTable];\r\n        if (!targetTableSchema) throw KonroError(`Schema for table \"${relationDef.targetTable}\" not found.`);\r\n\r\n        processedRelatedRecords = processedRelatedRecords.map(rec => {\r\n          const newRec: KRecord = {};\r\n          for (const outputKey in nestedSelect) {\r\n            const def = nestedSelect[outputKey];\r\n            if (!def) continue;\r\n            // nested with() does not support selecting relations, only columns, as per spec.\r\n            if (def._type === 'column') {\r\n              const colName = Object.keys(targetTableSchema).find(key => targetTableSchema[key] === def);\r\n              if (colName && rec.hasOwnProperty(colName)) {\r\n                newRec[outputKey] = rec[colName];\r\n              }\r\n            }\r\n          }\r\n          return newRec;\r\n        });\r\n      }\r\n\r\n      // Finally, attach the results to the parent record\r\n      if (relationDef.relationType === 'one') {\r\n        record[relationName] = processedRelatedRecords[0] ?? null;\r\n      } else {\r\n        record[relationName] = processedRelatedRecords;\r\n      }\r\n    }\r\n  }\r\n\r\n  return resultsWithRelations;\r\n};\r\n\r\nexport const _queryImpl = <S extends KonroSchema<any, any>>(state: DatabaseState, schema: S, descriptor: QueryDescriptor): KRecord[] => {\r\n  const tableState = state[descriptor.tableName];\r\n  if (!tableState) return [];\r\n\r\n  const tableSchema = schema.tables[descriptor.tableName];\r\n  if (!tableSchema) throw KonroError(`Schema for table \"${descriptor.tableName}\" not found.`);\r\n  const deletedAtColumn = Object.keys(tableSchema).find(key => tableSchema[key]?.options?._konro_sub_type === 'deletedAt');\r\n\r\n  // 1. Filter\r\n  let results: KRecord[];\r\n\r\n  // Auto-filter soft-deleted records unless opted-out\r\n  if (deletedAtColumn && !descriptor.withDeleted) {\r\n    results = tableState.records.filter(r => r[deletedAtColumn] === null || r[deletedAtColumn] === undefined);\r\n  } else {\r\n    results = [...tableState.records];\r\n  }\r\n  \r\n  results = descriptor.where ? results.filter(descriptor.where) : results;\r\n\r\n  // 2. Eager load relations (`with`) - must happen after filtering\r\n  if (descriptor.with) {\r\n    results = \r\n_processWith(results, descriptor.tableName, descriptor.with, schema, state);\r\n  }\r\n\r\n  // 3. Paginate\r\n  const offset = descriptor.offset ?? 0;\r\n  const limit = descriptor.limit ?? results.length;\r\n  let paginatedResults = results.slice(offset, offset + limit);\r\n\r\n  // 4. Select Fields\r\n  if (descriptor.select) {\r\n    const relationsSchema = schema.relations[descriptor.tableName] ?? {};\r\n\r\n    paginatedResults = paginatedResults.map(rec => {\r\n      const newRec: KRecord = {};\r\n      for (const outputKey in descriptor.select!) {\r\n        const def = descriptor.select![outputKey];\r\n        if (!def) continue;\r\n        if (def._type === 'column') {\r\n          const colName = Object.keys(tableSchema).find(key => tableSchema[key] === def);\r\n          if (colName && rec.hasOwnProperty(colName)) {\r\n            newRec[outputKey] = rec[colName];\r\n          }\r\n        } else if (def._type === 'relation') {\r\n          const relName = Object.keys(relationsSchema).find(key => relationsSchema[key] === def);\r\n          if (relName && rec.hasOwnProperty(relName)) {\r\n            newRec[outputKey] = rec[relName];\r\n          }\r\n        }\r\n      }\r\n      return newRec;\r\n    });\r\n  }\r\n\r\n  return paginatedResults;\r\n};\r\n\r\nconst findRelatedRecords = (state: DatabaseState, record: KRecord, relationDef: RelationDefinition) => {\r\n  const foreignKey = record[relationDef.on];\r\n  const targetTable = state[relationDef.targetTable];\r\n\r\n  if (foreignKey === undefined || !targetTable) return [];\r\n\r\n  // one-to-many: 'on' is PK on current table, 'references' is FK on target\r\n  if (relationDef.relationType === 'many') {\r\n    return targetTable.records.filter(r => r[relationDef.references] === foreignKey);\r\n  }\r\n\r\n  // many-to-one: 'on' is FK on current table, 'references' is PK on target\r\n  if (relationDef.relationType === 'one') {\r\n    return targetTable.records.filter(r => r[relationDef.references] === foreignKey);\r\n  }\r\n\r\n  return [];\r\n};\r\n\r\n// --- AGGREGATION ---\r\n\r\nexport const _aggregateImpl = <S extends KonroSchema<any, any>>(\r\n  state: DatabaseState,\r\n  _schema: S, // Not used but keep for API consistency\r\n  descriptor: AggregationDescriptor\r\n): Record<string, number | null> => {\r\n  const tableState = state[descriptor.tableName];\r\n  if (!tableState) return {};\r\n\r\n  const filteredRecords = descriptor.where ? tableState.records.filter(descriptor.where) : [...tableState.records];\r\n  const results: Record<string, number | null> = {};\r\n\r\n  for (const resultKey in descriptor.aggregations) {\r\n    const aggDef = descriptor.aggregations[resultKey];\r\n    if (!aggDef) continue;\r\n\r\n    if (aggDef.aggType === 'count') {\r\n      results[resultKey] = filteredRecords.length;\r\n      continue;\r\n    }\r\n\r\n    if (!aggDef.column) {\r\n      throw KonroError(`Aggregation '${aggDef.aggType}' requires a column.`);\r\n    }\r\n    const column = aggDef.column;\r\n\r\n    const values = filteredRecords.map(r => r[column]).filter(v => typeof v === 'number') as number[];\r\n\r\n    if (values.length === 0) {\r\n      if (aggDef.aggType === 'sum') {\r\n        results[resultKey] = 0; // sum of empty set is 0\r\n      } else {\r\n        results[resultKey] = null; // avg, min, max of empty set is null\r\n      }\r\n      continue;\r\n    }\r\n\r\n    switch (aggDef.aggType) {\r\n      case 'sum':\r\n        results[resultKey] = values.reduce((sum, val) => sum + val, 0);\r\n        break;\r\n      case 'avg':\r\n        results[resultKey] = values.reduce((sum, val) => sum + val, 0) / values.length;\r\n        break;\r\n      case 'min':\r\n        results[resultKey] = Math.min(...values);\r\n        break;\r\n      case 'max':\r\n        results[resultKey] = Math.max(...values);\r\n        break;\r\n    }\r\n  }\r\n  return results;\r\n};\r\n\r\n// --- INSERT ---\r\n\r\nexport const _insertImpl = <S extends KonroSchema<any, any>>(state: DatabaseState, schema: S, tableName: string, values: KRecord[]): [DatabaseState, KRecord[]] => {\r\n  const oldTableState = state[tableName];\r\n  if (!oldTableState) throw KonroError(`Table \"${tableName}\" does not exist in the database state.`);\r\n\r\n  // To maintain immutability, we deep-clone only the table being modified.\r\n  const tableState = structuredClone(oldTableState);\r\n  const tableSchema = schema.tables[tableName];\r\n  if (!tableSchema) throw KonroError(`Schema for table \"${tableName}\" not found.`);\r\n  const insertedRecords: KRecord[] = [];\r\n\r\n  for (const value of values) {\r\n    const newRecord: KRecord = { ...value };\r\n    // Handle IDs and defaults\r\n    for (const colName in tableSchema) {\r\n      const colDef = tableSchema[colName];\r\n      if (colDef.dataType === 'id') {\r\n        if (newRecord[colName] === undefined) {\r\n          // Generate new PK if not provided\r\n          if (colDef.options?._pk_strategy === 'uuid') {\r\n            newRecord[colName] = randomUUID();\r\n          } else { // 'auto-increment' or legacy undefined strategy\r\n            tableState.meta.lastId++;\r\n            newRecord[colName] = tableState.meta.lastId;\r\n          }\r\n        } else {\r\n          // If user provided an ID for an auto-increment table, update lastId to avoid future collisions.\r\n          if (colDef.options?._pk_strategy !== 'uuid' && typeof newRecord[colName] === 'number') {\r\n            tableState.meta.lastId = Math.max(tableState.meta.lastId, newRecord[colName] as number);\r\n          }\r\n        }\r\n      }\r\n      if (newRecord[colName] === undefined && colDef.options?.default !== undefined) {\r\n        newRecord[colName] = typeof colDef.options.default === 'function' ? colDef.options.default() : colDef.options.default;\r\n      }\r\n    }\r\n\r\n    // Validate the record before inserting\r\n    validateRecord(newRecord, tableSchema, tableState.records);\r\n\r\n    tableState.records.push(newRecord);\r\n    insertedRecords.push(newRecord);\r\n  }\r\n\r\n  const newState = { ...state, [tableName]: tableState };\r\n  return [newState, insertedRecords];\r\n};\r\n\r\n// --- UPDATE ---\r\n\r\nexport const _updateImpl = <S extends KonroSchema<any, any>>(state: DatabaseState, schema: S, tableName: string, data: Partial<KRecord>, predicate: (record: KRecord) => boolean): [DatabaseState, KRecord[]] => {\r\n  const oldTableState = state[tableName];\r\n  if (!oldTableState) throw KonroError(`Table \"${tableName}\" does not exist in the database state.`);\r\n\r\n  const tableSchema = schema.tables[tableName];\r\n  if (!tableSchema) {\r\n    throw KonroError(`Schema for table \"${tableName}\" not found.`);\r\n  }\r\n\r\n  const updatedRecords: KRecord[] = [];\r\n\r\n  // Auto-update 'updatedAt' timestamp\r\n  for (const colName of Object.keys(tableSchema)) {\r\n      if (tableSchema[colName]?.options?._konro_sub_type === 'updatedAt') {\r\n          (data as KRecord)[colName] = new Date();\r\n      }\r\n  }\r\n\r\n  const updateData = { ...data };\r\n  // Find the ID column from the schema and prevent it from being updated.\r\n  const idColumn = Object.entries(tableSchema).find(([, colDef]) => {\r\n    return colDef && typeof colDef === 'object' && '_type' in colDef && colDef._type === 'column' && 'dataType' in colDef && colDef.dataType === 'id';\r\n  })?.[0];\r\n  if (idColumn && updateData[idColumn] !== undefined) {\r\n    delete updateData[idColumn];\r\n  }\r\n\r\n  const newRecords = oldTableState.records.map(record => {\r\n    if (predicate(record)) {\r\n      const updatedRecord = { ...record, ...updateData };\r\n\r\n      // Validate the updated record, excluding current record from unique checks\r\n      const otherRecords = oldTableState.records.filter(r => r !== record);\r\n      validateRecord(updatedRecord, tableSchema, otherRecords);\r\n\r\n      updatedRecords.push(updatedRecord);\r\n      return updatedRecord;\r\n    }\r\n    return record;\r\n  });\r\n\r\n  if (updatedRecords.length === 0) {\r\n    return [state, []];\r\n  }\r\n\r\n  const tableState = { ...oldTableState, records: newRecords };\r\n  const newState = { ...state, [tableName]: tableState };\r\n\r\n  return [newState, updatedRecords];\r\n};\r\n\r\n\r\n// --- DELETE ---\r\n\r\nfunction applyCascades<S extends KonroSchema<any, any>>(\r\n  state: DatabaseState<S>,\r\n  schema: S,\r\n  tableName: string,\r\n  deletedRecords: KRecord[]\r\n): DatabaseState<S> {\r\n  if (deletedRecords.length === 0) {\r\n    return state;\r\n  }\r\n\r\n  let nextState = state;\r\n  const relations = schema.relations[tableName] ?? {};\r\n\r\n  for (const relationName in relations) {\r\n    const relationDef = relations[relationName];\r\n    // We only cascade from the \"one\" side of a one-to-many relationship, which is a 'many' type in Konro.\r\n    if (!relationDef || relationDef.relationType !== 'many' || !relationDef.onDelete) {\r\n      continue;\r\n    }\r\n\r\n    const sourceKey = relationDef.on;\r\n    const targetTable = relationDef.targetTable;\r\n    const targetKey = relationDef.references;\r\n\r\n    const sourceKeyValues = deletedRecords.map(r => r[sourceKey]).filter(v => v !== undefined);\r\n    if (sourceKeyValues.length === 0) continue;\r\n\r\n    const sourceKeySet = new Set(sourceKeyValues);\r\n    const predicate = (record: KRecord) => sourceKeySet.has(record[targetKey]);\r\n\r\n    if (relationDef.onDelete === 'CASCADE') {\r\n      // Recursively delete\r\n      const [newState, ] = _deleteImpl(nextState, schema, targetTable, predicate);\r\n      nextState = newState;\r\n    } else if (relationDef.onDelete === 'SET NULL') {\r\n      // Update FK to null\r\n      const [newState, ] = _updateImpl(nextState, schema, targetTable, { [targetKey]: null }, predicate);\r\n      nextState = newState;\r\n    }\r\n  }\r\n\r\n  return nextState;\r\n}\r\n\r\nexport const _deleteImpl = (state: DatabaseState, schema: KonroSchema<any, any>, tableName: string, predicate: (record: KRecord) => boolean): [DatabaseState, KRecord[]] => {\r\n  const oldTableState = state[tableName];\r\n  if (!oldTableState) throw KonroError(`Table \"${tableName}\" does not exist in the database state.`);\r\n  const tableSchema = schema.tables[tableName];\r\n  if (!tableSchema) throw KonroError(`Schema for table \"${tableName}\" not found.`);\r\n\r\n  const deletedAtColumn = Object.keys(tableSchema).find(key => tableSchema[key]?.options?._konro_sub_type === 'deletedAt');\r\n\r\n  // Soft delete path\r\n  if (deletedAtColumn) {\r\n    const recordsToUpdate: KRecord[] = [];\r\n    const now = new Date();\r\n\r\n    const newRecords = oldTableState.records.map(record => {\r\n      if (!record[deletedAtColumn] && predicate(record)) { // Not already soft-deleted and matches predicate\r\n        const updatedRecord = { ...record, [deletedAtColumn]: now };\r\n        recordsToUpdate.push(updatedRecord);\r\n        return updatedRecord;\r\n      }\r\n      return record;\r\n    });\r\n\r\n    if (recordsToUpdate.length === 0) return [state, []];\r\n\r\n    const baseState = { ...state, [tableName]: { ...oldTableState, records: newRecords } };\r\n    const finalState = applyCascades(baseState, schema, tableName, recordsToUpdate);\r\n    \r\n    // The returned records are the ones that were just soft-deleted from this table.\r\n    return [finalState, recordsToUpdate];\r\n  } \r\n  \r\n  // Hard delete path\r\n  const recordsToDelete: KRecord[] = [];\r\n  const keptRecords = oldTableState.records.filter(r => predicate(r) ? (recordsToDelete.push(r), false) : true);\r\n\r\n  if (recordsToDelete.length === 0) return [state, []];\r\n\r\n  const baseState = { ...state, [tableName]: { ...oldTableState, records: keptRecords } };\r\n  const finalState = applyCascades(baseState, schema, tableName, recordsToDelete);\r\n\r\n  return [finalState, recordsToDelete];\r\n};\r\n\r\n// --- VALIDATION ---\r\n\r\nconst validateRecord = (record: KRecord, tableSchema: Record<string, any>, existingRecords: KRecord[]): void => {\r\n  for (const [columnName, colDef] of Object.entries(tableSchema)) {\r\n    if (!colDef || typeof colDef !== 'object' || !('dataType' in colDef)) continue;\r\n\r\n    const value = record[columnName];\r\n    const options = colDef.options || {};\r\n\r\n    // Skip validation for undefined values (they should have defaults applied already)\r\n    if (value === undefined) continue;\r\n\r\n    // Validate unique constraint\r\n    if (options.unique && existingRecords.some(r => r[columnName] === value)) {\r\n      throw KonroValidationError(`Value '${String(value)}' for column '${columnName}' must be unique`);\r\n    }\r\n\r\n    // Validate string constraints\r\n    if (colDef.dataType === 'string' && typeof value === 'string') {\r\n      // Min length\r\n      if (options.min !== undefined && value.length < options.min) {\r\n        throw KonroValidationError(`String '${value}' for column '${columnName}' is too short (min: ${options.min})`);\r\n      }\r\n\r\n      // Max length\r\n      if (options.max !== undefined && value.length > options.max) {\r\n        throw KonroValidationError(`String '${value}' for column '${columnName}' is too long (max: ${options.max})`);\r\n      }\r\n\r\n      // Format validation\r\n      if (options.format === 'email' && !isValidEmail(value)) {\r\n        throw KonroValidationError(`Value '${value}' for column '${columnName}' is not a valid email`);\r\n      }\r\n    }\r\n\r\n    // Validate number constraints\r\n    if (colDef.dataType === 'number' && typeof value === 'number') {\r\n      // Min value\r\n      if (options.min !== undefined && value < options.min) {\r\n        throw KonroValidationError(`Number ${value} for column '${columnName}' is too small (min: ${options.min})`);\r\n      }\r\n\r\n      // Max value\r\n      if (options.max !== undefined && value > options.max) {\r\n        throw KonroValidationError(`Number ${value} for column '${columnName}' is too large (max: ${options.max})`);\r\n      }\r\n    }\r\n  }\r\n};\r\n\r\nconst isValidEmail = (email: string): boolean => {\r\n  const emailRegex = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/;\r\n  return emailRegex.test(email);\r\n};"
+approved: true

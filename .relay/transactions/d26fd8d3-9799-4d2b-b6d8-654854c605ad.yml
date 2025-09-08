@@ -1,0 +1,781 @@
+uuid: d26fd8d3-9799-4d2b-b6d8-654854c605ad
+projectId: konro
+createdAt: '2025-07-09T00:14:13.923Z'
+linesAdded: 13
+linesRemoved: 12
+gitCommitMsg: 'fix(types): Correct DbContext inference and internal typings'
+promptSummary: >-
+  The user reported a new set of TypeScript errors after my last fix. The errors
+  are from both `src/db.ts` and the test files. The test file errors indicate
+  that the `db` object is still being inferred as a union type. I need to fix
+  the remaining type errors in `db.ts` and then fix the test files to correctly
+  infer the `InMemoryDbContext` type.
+reasoning:
+  - >-
+    You are right, my previous fix was not complete. The introduction of the
+    union type for the `DbContext` broke the type inference in the test files,
+    and there were a few residual type errors in the `db.ts` file itself.
+  - My apologies for the oversight. I'll correct these issues now.
+  - '### Step 1: Fix Type Errors in `db.ts`'
+  - >-
+    First, I will fix the typing issues inside the `createOnDemandDbContext`
+    function. This involves correcting the generic arguments for the `update`
+    and `delete` builders and adding explicit types to their function parameters
+    to satisfy TypeScript.
+  - '### Step 2: Fix `InMemoryFlow` Integration Test'
+  - >-
+    Next, I will fix the `CrudCycle.test.ts` file. The problem is that the `db`
+    variable was explicitly typed as the broad `DbContext` union. Since this
+    test is specifically for the in-memory flow, I will change its type to the
+    more specific `InMemoryDbContext`.
+  - '### Step 3: Fix Type Definition Test'
+  - >-
+    Finally, I'll fix the `InferredTypes.test-d.ts` file. The `db` instance was
+    created with `adapter: {} as any`, which provided no type information for
+    inference. I will create a proper in-memory adapter so that `createDatabase`
+    correctly infers an `InMemoryDbContext`, which will resolve the errors.
+  - >-
+    These changes should resolve all the reported TypeScript errors. The key was
+    to ensure that the `db` variable in the test files was correctly inferred as
+    an `InMemoryDbContext`, matching the intent of those tests.
+operations:
+  - type: write
+    path: src/db.ts
+    content: |-
+      <<<<<<< SEARCH
+          update: <T extends keyof S['tables']>(tableName: T): OnDemandUpdateBuilder<S, S['base'][T], S['create'][T]> => ({
+            set: (data) => ({
+              where: async (predicate) => {
+                const state = await getFullState();
+                const [newState, updatedRecords] = _updateImpl(state, schema, tableName as string, data as Partial<KRecord>, normalizePredicate(predicate as any));
+                if (updatedRecords.length > 0) {
+                  const tableState = newState[tableName as string];
+                  if (tableState) {
+                    await writeTable(tableName as string, tableState);
+                  }
+                }
+                return updatedRecords as S['base'][T][];
+              },
+            }),
+          }),
+      =======
+          update: <T extends keyof S['tables']>(tableName: T): OnDemandUpdateBuilder<S['base'][T], S['create'][T]> => ({
+            set: (data: Partial<S['create'][T]>) => ({
+              where: async (predicate: Partial<S['base'][T]> | ((record: S['base'][T]) => boolean)) => {
+                const state = await getFullState();
+                const [newState, updatedRecords] = _updateImpl(state, schema, tableName as string, data as Partial<KRecord>, normalizePredicate(predicate as any));
+                if (updatedRecords.length > 0) {
+                  const tableState = newState[tableName as string];
+                  if (tableState) {
+                    await writeTable(tableName as string, tableState);
+                  }
+                }
+                return updatedRecords as S['base'][T][];
+              },
+            }),
+          }),
+      >>>>>>> REPLACE
+      <<<<<<< SEARCH
+          delete: <T extends keyof S['tables']>(tableName: T): OnDemandDeleteBuilder<S, S['base'][T]> => ({
+            where: async (predicate) => {
+              const state = await getFullState();
+              const [newState, deletedRecords] = _deleteImpl(state, tableName as string, normalizePredicate(predicate as any));
+              if (deletedRecords.length > 0) {
+                const tableState = newState[tableName as string];
+                if (tableState) {
+                  await writeTable(tableName as string, tableState);
+                }
+              }
+              return deletedRecords as S['base'][T][];
+            },
+          }),
+      =======
+          delete: <T extends keyof S['tables']>(tableName: T): OnDemandDeleteBuilder<S['base'][T]> => ({
+            where: async (predicate: Partial<S['base'][T]> | ((record: S['base'][T]) => boolean)) => {
+              const state = await getFullState();
+              const [newState, deletedRecords] = _deleteImpl(state, tableName as string, normalizePredicate(predicate as any));
+              if (deletedRecords.length > 0) {
+                const tableState = newState[tableName as string];
+                if (tableState) {
+                  await writeTable(tableName as string, tableState);
+                }
+              }
+              return deletedRecords as S['base'][T][];
+            },
+          }),
+      >>>>>>> REPLACE
+    patchStrategy: multi-search-replace
+  - type: write
+    path: test/integration/InMemoryFlow/CrudCycle.test.ts
+    content: |-
+      --- test/integration/InMemoryFlow/CrudCycle.test.ts
+      +++ test/integration/InMemoryFlow/CrudCycle.test.ts
+      @@ -2,11 +2,11 @@
+       import { konro } from '../../../src/index';
+       import { testSchema } from '../../util';
+       import path from 'path';
+      -import type { DbContext } from '../../../src/db';
+      +import type { InMemoryDbContext } from '../../../src/db';
+       import type { DatabaseState } from '../../../src/types';
+       
+       describe('Integration > InMemoryFlow > CrudCycle', () => {
+      -  let db: DbContext<typeof testSchema>;
+      +  let db: InMemoryDbContext<typeof testSchema>;
+         let state: DatabaseState<typeof testSchema>;
+       
+         beforeEach(() => {
+    patchStrategy: new-unified
+  - type: write
+    path: test/integration/Types/InferredTypes.test-d.ts
+    content: >-
+      --- test/integration/Types/InferredTypes.test-d.ts
+
+      +++ test/integration/Types/InferredTypes.test-d.ts
+
+      @@ -19,7 +19,8 @@
+             profile: null,
+           };
+       
+      -        // This should be valid
+
+      -        user.name; // Accessing for type check
+
+      -    const db = konro.createDatabase({ schema: testSchema, adapter: {} as
+      any });
+
+      +    // This should be valid
+
+      +    user.name; // Accessing for type check
+
+      +    const adapter = konro.createFileAdapter({ format: 'json', single: {
+      filepath: 'dummy.json' }});
+
+      +    const db = konro.createDatabase({ schema: testSchema, adapter });
+           const state = db.createEmptyState();
+       
+           // Test 2: Should cause a TS error if a non-existent field is used in a where clause.
+      @@ -39,12 +40,12 @@
+           db.insert(state, 'users', { name: 'Bob', email: 'bob@test.com', age: 25 });
+       
+           // Test 4: Nested .with clause should be typed correctly
+      -    db.query(state).from('users').with({
+
+      +    db.query(state).from('users').with({ // TODO: `query` should not
+      require state in on-demand mode.
+             posts: {
+               where: (post) => post.title.startsWith('A') // post is typed as Post
+             }
+           }).first();
+       
+           // @ts-expect-error - 'nonExistentRelation' is not a valid relation on 'users'
+      -    db.query(state).from('users').with({ nonExistentRelation: true });
+
+      +    db.query(state).from('users').with({ nonExistentRelation: true }); //
+      TODO: `query` should not require state in on-demand mode.
+       
+           // Test 5: A query without .with() should return the base type, without relations.
+           const baseUser = db.query(state).from('users').where({ id: 1 }).first();
+    patchStrategy: new-unified
+snapshot:
+  src/db.ts: >-
+    import path from 'path';
+
+    import { AggregationDefinition, ColumnDefinition, KonroSchema,
+    RelationDefinition } from './schema';
+
+    import { StorageAdapter, FileStorageAdapter } from './adapter';
+
+    import { DatabaseState, KRecord } from './types';
+
+    import { _queryImpl, _insertImpl, _updateImpl, _deleteImpl, createEmptyState
+    as createEmptyStateImpl, QueryDescriptor, _aggregateImpl,
+    AggregationDescriptor } from './operations';
+
+    import { createPredicateFromPartial } from './utils/predicate.util';
+
+    import { KonroError, KonroStorageError } from './utils/error.util';
+
+    import { writeAtomic } from './fs';
+
+
+    // A helper to normalize a predicate argument
+
+    const normalizePredicate = <T extends KRecord>(
+      predicate: Partial<T> | ((record: T) => boolean)
+    ): ((record: KRecord) => boolean) =>
+      // The cast is necessary due to function argument contravariance.
+      // The internal operations work on the wider `KRecord`, while the fluent API provides the specific `T`.
+      (typeof predicate === 'function' ? predicate : createPredicateFromPartial(predicate)) as (record: KRecord) => boolean;
+
+    // --- TYPE HELPERS for Fluent API ---
+
+
+    type RelatedModel<T> = T extends (infer R)[] ? R : T extends (infer R |
+    null) ? R : T;
+
+
+    // TAll is the full relational model type, e.g. schema.types.users
+
+    type WithArgument<TAll> = { // e.g. TAll = S['types']['users']
+      [K in keyof TAll as NonNullable<TAll[K]> extends any[] | object ? K : never]?: boolean | ({
+        where?: (record: RelatedModel<NonNullable<TAll[K]>>) => boolean;
+      } & (
+        | { select: Record<string, ColumnDefinition<unknown>>; with?: never }
+        | { select?: never; with?: WithArgument<RelatedModel<NonNullable<TAll[K]>>> }
+      ));
+    };
+
+
+    type ResolveWith<
+      S extends KonroSchema<any, any>,
+      TName extends keyof S['tables'],
+      TWith extends WithArgument<S['types'][TName]>
+    > = { // TName='users', TWith={posts: {with: {author: true}}}
+        [K in keyof TWith & keyof S['relations'][TName]]:
+            S['relations'][TName][K] extends { relationType: 'many' }
+                ? ( // 'many' relation -> array result. K = 'posts'
+                    TWith[K] extends { select: infer TSelect }
+                        ? ({ [P in keyof TSelect]: InferColumnType<TSelect[P]> })[]
+                        : TWith[K] extends { with: infer TNestedWith }
+                            // S['relations']['users']['posts']['targetTable'] = 'posts'
+                            ? (S['base'][S['relations'][TName][K]['targetTable']] & ResolveWith<S, S['relations'][TName][K]['targetTable'], TNestedWith & WithArgument<S['types'][S['relations'][TName][K]['targetTable']]>>)[]
+                            // posts: true.
+                            : S['base'][S['relations'][TName][K]['targetTable']][]
+                  )
+                : S['relations'][TName][K] extends { relationType: 'one' }
+                    ? ( // 'one' relation -> nullable object result
+                        TWith[K] extends { select: infer TSelect }
+                            ? ({ [P in keyof TSelect]: InferColumnType<TSelect[P]> }) | null
+                            : TWith[K] extends { with: infer TNestedWith }
+                                ? (S['base'][S['relations'][TName][K]['targetTable']] & ResolveWith<S, S['relations'][TName][K]['targetTable'], TNestedWith & WithArgument<S['types'][S['relations'][TName][K]['targetTable']]>>) | null
+                                : S['base'][S['relations'][TName][K]['targetTable']] | null
+                      )
+                    : never
+    };
+
+
+    // InferColumnType is not exported from schema, so we need it here too.
+
+    type InferColumnType<C> = C extends ColumnDefinition<infer T> ? T : never;
+
+
+    // --- IN-MEMORY API TYPES (STATEFUL) ---
+
+
+    interface ChainedQueryBuilder<S extends KonroSchema<any, any>, TName extends
+    keyof S['tables'], TReturn> {
+      select(fields: Record<string, ColumnDefinition<unknown> | RelationDefinition>): this;
+      where(predicate: Partial<S['base'][TName]> | ((record: S['base'][TName]) => boolean)): this;
+      with<W extends WithArgument<S['types'][TName]>>(relations: W): ChainedQueryBuilder<S, TName, TReturn & ResolveWith<S, TName, W>>;
+      limit(count: number): this;
+      offset(count: number): this;
+      all(): TReturn[];
+      first(): TReturn | null;
+      aggregate<TAggs extends Record<string, AggregationDefinition>>(
+        aggregations: TAggs
+      ): { [K in keyof TAggs]: number | null };
+    }
+
+
+    interface QueryBuilder<S extends KonroSchema<any, any>> {
+      from<T extends keyof S['tables']>(tableName: T): ChainedQueryBuilder<S, T, S['base'][T]>;
+    }
+
+
+    interface UpdateBuilder<S extends KonroSchema<any, any>, TBase, TCreate> {
+      set(data: Partial<TCreate>): {
+        where(predicate: Partial<TBase> | ((record: TBase) => boolean)): [DatabaseState<S>, TBase[]];
+      };
+    }
+
+
+    interface DeleteBuilder<S extends KonroSchema<any, any>, TBase> {
+      where(predicate: Partial<TBase> | ((record: TBase) => boolean)): [DatabaseState<S>, TBase[]];
+    }
+
+
+    export interface InMemoryDbContext<S extends KonroSchema<any, any>> {
+      schema: S;
+      adapter: StorageAdapter;
+      read(): Promise<DatabaseState<S>>;
+      write(state: DatabaseState<S>): Promise<void>;
+      createEmptyState(): DatabaseState<S>;
+
+      query(state: DatabaseState<S>): QueryBuilder<S>;
+      insert<T extends keyof S['tables']>(state: DatabaseState<S>, tableName: T, values: S['create'][T]): [DatabaseState<S>, S['base'][T]];
+      insert<T extends keyof S['tables']>(state: DatabaseState<S>, tableName: T, values: Readonly<S['create'][T]>[]): [DatabaseState<S>, S['base'][T][]];
+      update<T extends keyof S['tables']>(state: DatabaseState<S>, tableName: T): UpdateBuilder<S, S['base'][T], S['create'][T]>;
+      delete<T extends keyof S['tables']>(state: DatabaseState<S>, tableName: T): DeleteBuilder<S, S['base'][T]>;
+    }
+
+
+
+    // --- ON-DEMAND API TYPES (STATELESS & ASYNC) ---
+
+
+    interface OnDemandChainedQueryBuilder<S extends KonroSchema<any, any>, TName
+    extends keyof S['tables'], TReturn> {
+      select(fields: Record<string, ColumnDefinition<unknown> | RelationDefinition>): this;
+      where(predicate: Partial<S['base'][TName]> | ((record: S['base'][TName]) => boolean)): this;
+      with<W extends WithArgument<S['types'][TName]>>(relations: W): OnDemandChainedQueryBuilder<S, TName, TReturn & ResolveWith<S, TName, W>>;
+      limit(count: number): this;
+      offset(count: number): this;
+      all(): Promise<TReturn[]>;
+      first(): Promise<TReturn | null>;
+      aggregate<TAggs extends Record<string, AggregationDefinition>>(
+        aggregations: TAggs
+      ): Promise<{ [K in keyof TAggs]: number | null }>;
+    }
+
+
+    interface OnDemandQueryBuilder<S extends KonroSchema<any, any>> {
+      from<T extends keyof S['tables']>(tableName: T): OnDemandChainedQueryBuilder<S, T, S['base'][T]>;
+    }
+
+
+    interface OnDemandUpdateBuilder<TBase, TCreate> {
+      set(data: Partial<TCreate>): {
+        where(predicate: Partial<TBase> | ((record: TBase) => boolean)): Promise<TBase[]>;
+      };
+    }
+
+
+    interface OnDemandDeleteBuilder<TBase> {
+      where(predicate: Partial<TBase> | ((record: TBase) => boolean)): Promise<TBase[]>;
+    }
+
+
+    export interface OnDemandDbContext<S extends KonroSchema<any, any>> {
+      schema: S;
+      adapter: StorageAdapter;
+      read(): Promise<never>; // Not supported in on-demand mode
+      write(): Promise<never>; // Not supported in on-demand mode
+      createEmptyState(): DatabaseState<S>;
+
+      query(): OnDemandQueryBuilder<S>;
+      insert<T extends keyof S['tables']>(tableName: T, values: S['create'][T]): Promise<S['base'][T]>;
+      insert<T extends keyof S['tables']>(tableName: T, values: Readonly<S['create'][T]>[]): Promise<S['base'][T][]>;
+      update<T extends keyof S['tables']>(tableName: T): OnDemandUpdateBuilder<S['base'][T], S['create'][T]>;
+      delete<T extends keyof S['tables']>(tableName: T): OnDemandDeleteBuilder<S['base'][T]>;
+    }
+
+
+    // --- DbContext Union Type ---
+
+    export type DbContext<S extends KonroSchema<any, any>> =
+    InMemoryDbContext<S> | OnDemandDbContext<S>;
+
+
+    // --- DATABASE FACTORY ---
+
+
+    function createInMemoryDbContext<S extends KonroSchema<any, any>>(
+      options: { schema: S; adapter: StorageAdapter }
+    ): InMemoryDbContext<S> {
+      const { schema, adapter } = options;
+      return {
+        schema,
+        adapter,
+        read: () => adapter.read(schema),
+        write: (state) => adapter.write(state),
+        createEmptyState: () => createEmptyStateImpl(schema),
+
+        insert: (<T extends keyof S['tables']>(
+          state: DatabaseState<S>,
+          tableName: T,
+          values: S['create'][T] | Readonly<S['create'][T]>[]
+        ): [DatabaseState<S>, S['base'][T] | S['base'][T][]] => {
+          const valsArray = Array.isArray(values) ? values : [values];
+          const [newState, inserted] = _insertImpl(state as DatabaseState, schema, tableName as string, valsArray as KRecord[]);
+          const result = Array.isArray(values) ? inserted : inserted[0];
+          return [newState as DatabaseState<S>, result] as [DatabaseState<S>, S['base'][T] | S['base'][T][]];
+        }) as InMemoryDbContext<S>['insert'],
+
+        query: (state: DatabaseState<S>): QueryBuilder<S> => ({
+          from: <TName extends keyof S['tables']>(tableName: TName): ChainedQueryBuilder<S, TName, S['base'][TName]> => {
+            const createBuilder = <TReturn>(currentDescriptor: QueryDescriptor): ChainedQueryBuilder<S, TName, TReturn> => ({
+              select(fields) {
+                return createBuilder<TReturn>({ ...currentDescriptor, select: fields });
+              },
+              where(predicate) {
+                return createBuilder<TReturn>({ ...currentDescriptor, where: normalizePredicate(predicate as any) });
+              },
+              with<W extends WithArgument<S['types'][TName]>>(relations: W) {
+                const newWith = { ...currentDescriptor.with, ...(relations as QueryDescriptor['with']) };
+                return createBuilder<TReturn & ResolveWith<S, TName, W>>({ ...currentDescriptor, with: newWith });
+              },
+              limit(count) {
+                return createBuilder<TReturn>({ ...currentDescriptor, limit: count });
+              },
+              offset(count) {
+                return createBuilder<TReturn>({ ...currentDescriptor, offset: count });
+              },
+              all: (): TReturn[] => _queryImpl(state as DatabaseState, schema, currentDescriptor) as any,
+              first: (): TReturn | null => (_queryImpl(state as DatabaseState, schema, { ...currentDescriptor, limit: 1 })[0] ?? null) as any,
+              aggregate: (aggregations) => {
+                const aggDescriptor: AggregationDescriptor = { ...currentDescriptor, aggregations };
+                return _aggregateImpl(state as DatabaseState, schema, aggDescriptor) as any;
+              },
+            });
+            return createBuilder<S['base'][TName]>({ tableName: tableName as string });
+          },
+        }),
+
+        update: <T extends keyof S['tables']>(state: DatabaseState<S>, tableName: T): UpdateBuilder<S, S['base'][T], S['create'][T]> => ({
+          set: (data) => ({
+            where: (predicate) => {
+              const [newState, updatedRecords] = _updateImpl(state as DatabaseState, schema, tableName as string, data as Partial<KRecord>, normalizePredicate(predicate as any));
+              return [newState as DatabaseState<S>, updatedRecords as S['base'][T][]];
+            },
+          }),
+        }),
+
+        delete: <T extends keyof S['tables']>(state: DatabaseState<S>, tableName: T): DeleteBuilder<S, S['base'][T]> => ({
+          where: (predicate) => {
+            const [newState, deletedRecords] = _deleteImpl(state as DatabaseState, tableName as string, normalizePredicate(predicate as any));
+            return [newState as DatabaseState<S>, deletedRecords as S['base'][T][]];
+          },
+        }),
+      };
+    }
+
+
+    function createOnDemandDbContext<S extends KonroSchema<any, any>>(
+      options: { schema: S, adapter: FileStorageAdapter }
+    ): OnDemandDbContext<S> {
+      const { schema, adapter } = options;
+      const dir = adapter.options.multi!.dir;
+
+      // Helper to read/write a single table file
+      const readTable = async (tableName: string): Promise<{ records: KRecord[], meta: { lastId: number } }> => {
+        const filepath = path.join(dir, `${tableName}${adapter.fileExtension}`);
+        const data = await adapter.fs.readFile(filepath);
+        if (!data) return { records: [], meta: { lastId: 0 } };
+        try {
+          return adapter.serializer.parse(data);
+        } catch (e: any) {
+          throw KonroStorageError(`Failed to parse file at "${filepath}". It may be corrupt or not a valid ${adapter.options.format} file. Original error: ${e.message}`);
+        }
+      };
+
+      const writeTable = async (tableName: string, tableState: { records: KRecord[], meta: { lastId: number } }): Promise<void> => {
+        await adapter.fs.mkdir(dir, { recursive: true });
+        const filepath = path.join(dir, `${tableName}${adapter.fileExtension}`);
+        const content = adapter.serializer.stringify(tableState);
+        await writeAtomic(filepath, content, adapter.fs);
+      };
+      
+      const getFullState = async (): Promise<DatabaseState> => {
+        const state = createEmptyStateImpl(schema);
+        for (const tableName in schema.tables) {
+          (state as any)[tableName] = await readTable(tableName);
+        }
+        return state;
+      }
+
+      const notSupported = () => Promise.reject(KonroError("This method is not supported in 'on-demand' mode."));
+
+      return {
+        schema,
+        adapter,
+        read: notSupported,
+        write: notSupported,
+        createEmptyState: () => createEmptyStateImpl(schema),
+
+        insert: (async <T extends keyof S['tables']>(
+          tableName: T,
+          values: S['create'][T] | Readonly<S['create'][T]>[]
+        ): Promise<S['base'][T] | S['base'][T][]> => {
+          const state = await getFullState(); // Read only the tables involved later
+          const valsArray = Array.isArray(values) ? values : [values];
+          const [newState, inserted] = _insertImpl(state, schema, tableName as string, valsArray as KRecord[]);
+          const tableState = newState[tableName as string];
+          if (tableState) {
+            await writeTable(tableName as string, tableState);
+          }
+          const result = Array.isArray(values) ? inserted : inserted[0];
+          return result as any;
+        }) as OnDemandDbContext<S>['insert'],
+
+        query: (): OnDemandQueryBuilder<S> => ({
+          from: <TName extends keyof S['tables']>(tableName: TName): OnDemandChainedQueryBuilder<S, TName, S['base'][TName]> => {
+            const createBuilder = <TReturn>(currentDescriptor: QueryDescriptor): OnDemandChainedQueryBuilder<S, TName, TReturn> => ({
+              select(fields) { return createBuilder<TReturn>({ ...currentDescriptor, select: fields }); },
+              where(predicate) { return createBuilder<TReturn>({ ...currentDescriptor, where: normalizePredicate(predicate as any) }); },
+              with<W extends WithArgument<S['types'][TName]>>(relations: W) {
+                const newWith = { ...currentDescriptor.with, ...(relations as QueryDescriptor['with']) };
+                return createBuilder<TReturn & ResolveWith<S, TName, W>>({ ...currentDescriptor, with: newWith });
+              },
+              limit(count) { return createBuilder<TReturn>({ ...currentDescriptor, limit: count }); },
+              offset(count) { return createBuilder<TReturn>({ ...currentDescriptor, offset: count }); },
+              all: async (): Promise<TReturn[]> => {
+                const state = await getFullState(); // Inefficient, but required for relations. Future optimization: only load tables in query.
+                return _queryImpl(state, schema, currentDescriptor) as any;
+              },
+              first: async (): Promise<TReturn | null> => {
+                const state = await getFullState();
+                return (_queryImpl(state, schema, { ...currentDescriptor, limit: 1 })[0] ?? null) as any;
+              },
+              aggregate: async (aggregations) => {
+                const state = await getFullState();
+                const aggDescriptor: AggregationDescriptor = { ...currentDescriptor, aggregations };
+                return _aggregateImpl(state, schema, aggDescriptor) as any;
+              },
+            });
+            return createBuilder<S['base'][TName]>({ tableName: tableName as string });
+          },
+        }),
+
+        update: <T extends keyof S['tables']>(tableName: T): OnDemandUpdateBuilder<S, S['base'][T], S['create'][T]> => ({
+          set: (data) => ({
+            where: async (predicate) => {
+              const state = await getFullState();
+              const [newState, updatedRecords] = _updateImpl(state, schema, tableName as string, data as Partial<KRecord>, normalizePredicate(predicate as any));
+              if (updatedRecords.length > 0) {
+                const tableState = newState[tableName as string];
+                if (tableState) {
+                  await writeTable(tableName as string, tableState);
+                }
+              }
+              return updatedRecords as S['base'][T][];
+            },
+          }),
+        }),
+
+        delete: <T extends keyof S['tables']>(tableName: T): OnDemandDeleteBuilder<S, S['base'][T]> => ({
+          where: async (predicate) => {
+            const state = await getFullState();
+            const [newState, deletedRecords] = _deleteImpl(state, tableName as string, normalizePredicate(predicate as any));
+            if (deletedRecords.length > 0) {
+              const tableState = newState[tableName as string];
+              if (tableState) {
+                await writeTable(tableName as string, tableState);
+              }
+            }
+            return deletedRecords as S['base'][T][];
+          },
+        }),
+      };
+    }
+
+
+
+    export function createDatabase<
+      S extends KonroSchema<any, any>,
+      TAdapter extends StorageAdapter,
+    >(
+      options: { schema: S; adapter: TAdapter }
+    ): TAdapter['mode'] extends 'on-demand' ? OnDemandDbContext<S> :
+    InMemoryDbContext<S>;
+
+    export function createDatabase<S extends KonroSchema<any, any>>(
+      options: { schema: S; adapter: StorageAdapter }
+    ): DbContext<S> {
+      const { adapter } = options;
+
+      if (adapter.mode === 'on-demand') {
+        // We can be reasonably sure it's a FileStorageAdapter due to the checks in createFileAdapter
+        return createOnDemandDbContext(options as { schema: S; adapter: FileStorageAdapter });
+      }
+
+      return createInMemoryDbContext(options);
+    }
+  test/integration/InMemoryFlow/CrudCycle.test.ts: |
+    import { describe, it, expect, beforeEach } from 'bun:test';
+    import { konro } from '../../../src/index';
+    import { testSchema } from '../../util';
+    import path from 'path';
+    import type { DbContext } from '../../../src/db';
+    import type { DatabaseState } from '../../../src/types';
+
+    describe('Integration > InMemoryFlow > CrudCycle', () => {
+      let db: DbContext<typeof testSchema>;
+      let state: DatabaseState<typeof testSchema>;
+
+      beforeEach(() => {
+        // Adapter is needed for context creation, but we won't use its I/O
+        const adapter = konro.createFileAdapter({
+          format: 'json',
+          single: { filepath: path.join(__dirname, 'test.db.json') },
+        });
+        db = konro.createDatabase({
+          schema: testSchema,
+          adapter,
+        });
+        state = db.createEmptyState();
+      });
+
+      it('should allow inserting a record and then immediately querying for it', () => {
+        const [newState, insertedUser] = db.insert(state, 'users', {
+          name: 'InMemory Alice',
+          email: 'alice@inmemory.com',
+          age: 30,
+          isActive: true,
+        });
+        expect(insertedUser.id).toBe(1);
+
+        const users = db.query(newState).from('users').all();
+        expect(users.length).toBe(1);
+        expect(users[0]).toEqual(insertedUser);
+      });
+
+      it('should correctly chain mutation operations by passing the newState', () => {
+        // Insert user
+        const [stateAfterUserInsert, user] = db.insert(state, 'users', {
+          name: 'Chain User',
+          email: 'chain@test.com',
+          age: 40,
+          isActive: true,
+        });
+
+        // Insert post using the new state
+        const [stateAfterPostInsert, post] = db.insert(stateAfterUserInsert, 'posts', {
+          title: 'Chained Post',
+          content: '...',
+          authorId: user.id,
+          publishedAt: new Date(),
+        });
+
+        expect(stateAfterPostInsert.users.records.length).toBe(1);
+        expect(stateAfterPostInsert.posts.records.length).toBe(1);
+        expect(post.authorId).toBe(user.id);
+      });
+
+      it('should update a record and verify the change in the returned newState', () => {
+        const [stateAfterInsert, user] = db.insert(state, 'users', {
+          name: 'Update Me',
+          email: 'update@test.com',
+          age: 50,
+          isActive: true,
+        });
+
+        const [stateAfterUpdate, updatedUsers] = db.update(stateAfterInsert, 'users')
+          .set({ name: 'Updated Name' })
+          .where({ id: user.id });
+
+        expect(updatedUsers.length).toBe(1);
+        expect(updatedUsers[0]?.name).toBe('Updated Name');
+
+        const queriedUser = db.query(stateAfterUpdate).from('users').where({ id: user.id }).first();
+        expect(queriedUser?.name).toBe('Updated Name');
+        expect(stateAfterInsert.users.records[0]?.name).toBe('Update Me'); // Original state is untouched
+      });
+
+      it('should delete a record and verify its absence in the returned newState', () => {
+        const [stateAfterInsert, user] = db.insert(state, 'users', {
+          name: 'Delete Me',
+          email: 'delete@test.com',
+          age: 60,
+          isActive: true,
+        });
+
+        const [stateAfterDelete, deletedUsers] = db.delete(stateAfterInsert, 'users')
+          .where({ id: user.id });
+
+        expect(deletedUsers.length).toBe(1);
+        expect(deletedUsers[0]?.name).toBe('Delete Me');
+
+        const users = db.query(stateAfterDelete).from('users').all();
+        expect(users.length).toBe(0);
+      });
+
+      it('should correctly execute a query with a .with() clause on an in-memory state', () => {
+        const [s1, user] = db.insert(state, 'users', {
+          name: 'Relation User',
+          email: 'relation@test.com',
+          age: 35,
+          isActive: true,
+        });
+        const [s2, ] = db.insert(s1, 'posts', [
+            { title: 'Relational Post 1', content: '...', authorId: user.id, publishedAt: new Date() },
+            { title: 'Relational Post 2', content: '...', authorId: user.id, publishedAt: new Date() },
+        ]);
+
+        const userWithPosts = db.query(s2).from('users').where({ id: user.id }).with({ posts: true }).first();
+
+        expect(userWithPosts).toBeDefined();
+        expect(userWithPosts?.name).toBe('Relation User');
+        expect(userWithPosts?.posts).toBeInstanceOf(Array);
+        expect(userWithPosts?.posts?.length).toBe(2);
+        expect(userWithPosts?.posts?.[0]?.title).toBe('Relational Post 1');
+      });
+    });
+  test/integration/Types/InferredTypes.test-d.ts: |
+    import { describe, it } from 'bun:test';
+    import { konro } from '../../../src/index';
+    import { schemaDef } from '../../util';
+
+    /**
+     * NOTE: This is a type definition test file.
+     * It is not meant to be run, but to be checked by `tsc`.
+     * The presence of `// @ts-expect-error` comments indicates
+     * that a TypeScript compilation error is expected on the next line.
+     * If the error does not occur, `tsc` will fail, which is the desired behavior for this test.
+     */
+    describe('Integration > Types > InferredTypes', () => {
+      it('should pass type checks', () => {
+        const testSchema = konro.createSchema(schemaDef);
+        type User = typeof testSchema.types.users;
+
+        // Test 1: Inferred User type should have correct primitive and relational fields.
+        const user: User = {
+          id: 1,
+          name: 'Alice',
+          email: 'alice@example.com',
+          age: 30,
+          isActive: true,
+          posts: [{
+            id: 1,
+            title: 'Post 1',
+            content: '...',
+            authorId: 1,
+            publishedAt: new Date(),
+          }],
+          profile: null,
+        };
+
+            // This should be valid
+            user.name; // Accessing for type check
+        const db = konro.createDatabase({ schema: testSchema, adapter: {} as any });
+        const state = db.createEmptyState();
+
+        // Test 2: Should cause a TS error if a non-existent field is used in a where clause.
+        // @ts-expect-error - 'nonExistentField' does not exist on type 'User'.
+        db.query(state).from('users').where({ nonExistentField: 'value' });
+
+        // This should be valid
+        db.query(state).from('users').where({ name: 'Alice' });
+
+        // Test 3: Should cause a TS error if a wrong type is passed to db.insert().
+        // @ts-expect-error - 'age' should be a number, not a string.
+        db.insert(state, 'users', { name: 'Bob', email: 'bob@test.com', age: 'twenty-five' });
+
+        // This should be valid - using type assertion for test-only code
+        // @ts-ignore - This is a type test only, not runtime code
+        db.insert(state, 'users', { name: 'Bob', email: 'bob@test.com', age: 25 });
+
+        // Test 4: Nested .with clause should be typed correctly
+        db.query(state).from('users').with({
+          posts: {
+            where: (post) => post.title.startsWith('A') // post is typed as Post
+          }
+        }).first();
+
+        // @ts-expect-error - 'nonExistentRelation' is not a valid relation on 'users'
+        db.query(state).from('users').with({ nonExistentRelation: true });
+
+        // Test 5: A query without .with() should return the base type, without relations.
+        const baseUser = db.query(state).from('users').where({ id: 1 }).first();
+        // This should be valid
+        baseUser?.name;
+        // @ts-expect-error - 'posts' does not exist on base user type, as .with() was not used.
+        baseUser?.posts;
+
+        // Test 6: A query with .with() should return the relations, which are now accessible.
+        const userWithPosts = db.query(state).from('users').where({ id: 1 }).with({ posts: true }).first();
+        userWithPosts?.posts; // This should be valid and typed as Post[] | undefined
+        
+        // userWithPosts?.posts?.[0]?.author; 
+      });
+    });
+approved: true

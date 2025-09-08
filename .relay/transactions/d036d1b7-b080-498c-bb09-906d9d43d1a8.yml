@@ -1,0 +1,71 @@
+uuid: d036d1b7-b080-498c-bb09-906d9d43d1a8
+projectId: konro
+createdAt: '2025-07-09T08:55:08.338Z'
+linesAdded: 24
+linesRemoved: 0
+gitCommitMsg: 'fix(types): export public types from main entry point'
+promptSummary: >-
+  Fix TypeScript error TS4023 by exporting public types like KonroSchema and
+  ColumnDefinition.
+reasoning:
+  - >-
+    Of course. That's a classic TypeScript library issue. The error `...but
+    cannot be named` means that a function in your library is returning a value
+    with a type that isn't exported from your library's main entry point. When a
+    user tries to export a variable holding that value, TypeScript doesn't know
+    how to write down its type.
+  - >-
+    To fix this, I need to export the key public-facing types from your
+    package's entry file, `src/index.ts`. This makes types like `KonroSchema`,
+    `ColumnDefinition`, and `DbContext` part of your library's public API,
+    allowing TypeScript in consuming projects to correctly infer and name them.
+  - '### `src/index.ts`'
+  - >-
+    I will add a new `export type` block to `src/index.ts` to make all the
+    necessary interfaces and types available to users of your library.
+  - >-
+    This change exports all the types that users would interact with directly or
+    indirectly through your API, resolving the `ts(4023)` error and improving
+    the overall developer experience for your library's users.
+  - '---'
+operations:
+  - type: write
+    path: src/index.ts
+    content: |-
+      --- src/index.ts
+      +++ src/index.ts
+      @@ -1,6 +1,27 @@
+       import { createDatabase } from './db';
+       import { createFileAdapter } from './adapter';
+       import { createSchema, id, uuid, string, number, boolean, date, createdAt, updatedAt, deletedAt, object, one, many, count, sum, avg, min, max } from './schema';
+      +
+      +export type {
+      +  // Core Schema & DB Types
+      +  KonroSchema,
+      +  DbContext,
+      +  InMemoryDbContext,
+      +  OnDemandDbContext,
+      +  DatabaseState,
+      +  KRecord,
+      +  // Schema Definition Types
+      +  ColumnDefinition,
+      +  RelationDefinition,
+      +  OneRelationDefinition,
+      +  ManyRelationDefinition,
+      +  AggregationDefinition,
+      +  // Adapter & FS Types
+      +  StorageAdapter,
+      +  FileAdapterOptions,
+      +  FileStorageAdapter,
+      +  SingleFileStrategy,
+      +  MultiFileStrategy,
+      +  PerRecordStrategy,
+      +  FsProvider,
+      +} from './types';
+       
+       /**
+        * The main Konro object, providing access to all core functionalities
+    patchStrategy: new-unified
+snapshot:
+  src/index.ts: "import { createDatabase } from './db';\r\nimport { createFileAdapter } from './adapter';\r\nimport { createSchema, id, uuid, string, number, boolean, date, createdAt, updatedAt, deletedAt, object, one, many, count, sum, avg, min, max } from './schema';\r\n\r\n/**\r\n * The main Konro object, providing access to all core functionalities\r\n * for schema definition, database creation, and adapter configuration.\r\n */\r\nexport const konro = {\r\n  /**\r\n   * Defines the structure, types, and relations of your database.\r\n   * This is the single source of truth for both runtime validation and static types.\r\n   */\r\n  createSchema,\r\n  /**\r\n   * Creates the main `db` context, which is the primary interface for all\r\n   * database operations (read, write, query, etc.).\r\n   */\r\n  createDatabase,\r\n  /**\r\n   * Creates a file-based storage adapter for persisting the database state\r\n   * to a JSON or YAML file.\r\n   */\r\n  createFileAdapter,\r\n  // --- Column Definition Helpers ---\r\n  id,\r\n  uuid,\r\n  string,\r\n  number,\r\n  boolean,\r\n  date,\r\n  createdAt,\n  updatedAt,\n  deletedAt,\n  object,\r\n  // --- Relationship Definition Helpers ---\r\n  one,\r\n  many,\r\n  // --- Aggregation Definition Helpers ---\r\n  count,\r\n  sum,\r\n  avg,\r\n  min,\r\n  max,\r\n};\r\n"
+approved: true

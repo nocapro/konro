@@ -1,0 +1,519 @@
+uuid: d196e810-7275-4384-93dd-0ec7853b0e35
+projectId: konro
+createdAt: '2025-07-08T12:57:31.575Z'
+linesAdded: 26
+linesRemoved: 12
+gitCommitMsg: 'fix(schema): correct generic constraints and type inference'
+promptSummary: >-
+  The user reported multiple TypeScript errors after my previous change. I need
+  to fix the generic type definitions in `src/schema.ts` to resolve them. The
+  errors indicate problems with missing generic constraints, incorrect type
+  generation for insert operations, and overly strict function signatures.
+reasoning:
+  - >-
+    I have analyzed the TypeScript errors. They stem from a few core issues in
+    the generic type definitions within `src/schema.ts`:
+  - >-
+    1.  **Missing Generic Constraints**: TypeScript couldn't guarantee that
+    types like `TTables` and `TBaseModels` had compatible keys, leading to
+    indexing errors.
+  - >-
+    2.  **Incorrect "Create" Type**: The logic for generating the types for
+    `db.insert` was flawed, making fields with default values incorrectly
+    required.
+  - >-
+    3.  **Overly Strict `createSchema`**: The function required a `relations`
+    property, failing for schemas without any relationships defined.
+  - >-
+    4.  **Inflexible `default` Property**: The column helper functions didn't
+    allow passing a function to generate a default value.
+  - I will now apply targeted fixes to `src/schema.ts` to resolve these issues.
+  - '### Step 1: Fix `src/schema.ts` generic types and function signatures'
+  - >-
+    I will apply several small fixes to `src/schema.ts` to add the necessary
+    constraints and correct the type logic. This should resolve all the reported
+    TypeScript errors.
+operations:
+  - type: write
+    path: src/schema.ts
+    content: >-
+      <<<<<<< SEARCH
+
+      /**
+       * A mapping of table names to their full model types, including relations.
+       * This is a recursive type that resolves relationships to other full models.
+       */
+      type Models<TTables, TRelations, TBaseModels> = {
+        [TableName in keyof TTables]: TBaseModels[TableName] & {
+          [RelationName in keyof TRelations[TableName]]?: TRelations[TableName][RelationName] extends RelationDefinition & {
+            relationType: 'one';
+            targetTable: infer TargetTable extends keyof TTables;
+          }
+            ? Models<TTables, TRelations, TBaseModels>[TargetTable] | null
+            : TRelations[TableName][RelationName] extends RelationDefinition & {
+                relationType: 'many';
+                targetTable: infer TargetTable extends keyof TTables;
+              }
+            ? Models<TTables, TRelations, TBaseModels>[TargetTable][]
+            : never;
+        };
+      };
+
+      =======
+
+      /**
+       * A mapping of table names to their full model types, including relations.
+       * This is a recursive type that resolves relationships to other full models.
+       */
+      type Models<
+        TTables extends Record<string, any>,
+        TRelations extends Record<string, any>,
+        TBaseModels extends Record<keyof TTables, any>
+      > = {
+        [TableName in keyof TTables]: TBaseModels[TableName] & {
+          [RelationName in keyof TRelations[TableName]]?: TRelations[TableName][RelationName] extends RelationDefinition & {
+            relationType: 'one';
+            targetTable: infer TargetTable extends keyof TTables;
+          }
+            ? Models<TTables, TRelations, TBaseModels>[TargetTable] | null
+            : TRelations[TableName][RelationName] extends RelationDefinition & {
+                relationType: 'many';
+                targetTable: infer TargetTable extends keyof TTables;
+              }
+            ? Models<TTables, TRelations, TBaseModels>[TargetTable][]
+            : never;
+        };
+      };
+
+      >>>>>>> REPLACE
+
+      <<<<<<< SEARCH
+
+      /** Finds all column names in a table definition that are optional for
+      insertion (i.e., `id` or has a `default`). */
+
+      type OptionalCreateKeys<TTableDef> = {
+        [K in keyof TTableDef]: TTableDef[K] extends ColumnDefinition<any> & ({ options: { default: any } } | { dataType: 'id' }) ? K : never;
+      }[keyof TTableDef];
+
+
+      /**
+       * A mapping of table names to their "create" types, used for `db.insert`.
+       * Required fields are kept, optional fields (id, defaults) are made partial, and `id` is removed.
+       */
+      type CreateModels<TTables, TBaseModels> = {
+        [TableName in keyof TTables]: Omit<
+          Omit<TBaseModels[TableName], OptionalCreateKeys<TTables[TableName]>> &
+            Partial<Pick<TBaseModels[TableName], OptionalCreateKeys<TTables[TableName]>>>,
+          'id'
+        >;
+      };
+
+      =======
+
+      /** Finds all column names in a table definition that are optional for
+      insertion (i.e., `id` or has a `default`). */
+
+      type OptionalCreateKeys<TTableDef> = {
+        [K in keyof TTableDef]: TTableDef[K] extends ColumnDefinition<any> & ({ options: { default: any } } | { dataType: 'id' }) ? K : never;
+      }[keyof TTableDef];
+
+
+      /**
+       * A mapping of table names to their "create" types, used for `db.insert`.
+       * It takes the base model, makes keys with defaults optional, and removes the `id` field.
+       */
+      type CreateModels<
+        TTables extends Record<string, any>,
+        TBaseModels extends Record<keyof TTables, any>
+      > = {
+        [TableName in keyof TTables]: Omit<
+          // Required fields are the ones not in OptionalCreateKeys
+          Pick<TBaseModels[TableName], Exclude<keyof TBaseModels[TableName], OptionalCreateKeys<TTables[TableName]>>> &
+          // Optional fields are made partial
+          Partial<Pick<TBaseModels[TableName], OptionalCreateKeys<TTables[TableName]>>>,
+          // 'id' is always omitted from create types
+          'id'
+        >;
+      };
+
+      >>>>>>> REPLACE
+
+      <<<<<<< SEARCH
+
+      /** The publicly exposed structure of a fully-processed Konro schema. */
+
+      export interface KonroSchema<TTables, TRelations> {
+        tables: TTables;
+        relations: TRelations;
+        types: Models<TTables, TRelations, BaseModels<TTables>>;
+        create: CreateModels<TTables, BaseModels<TTables>>;
+      }
+
+      =======
+
+      /** The publicly exposed structure of a fully-processed Konro schema. */
+
+      export interface KonroSchema<
+        TTables extends Record<string, any>,
+        TRelations extends Record<string, any>
+      > {
+        tables: TTables;
+        relations: TRelations;
+        types: Models<TTables, TRelations, BaseModels<TTables>>;
+        create: CreateModels<TTables, BaseModels<TTables>>;
+      }
+
+      >>>>>>> REPLACE
+
+      <<<<<<< SEARCH
+
+      export const createSchema = <
+        const TDef extends {
+          tables: Record<string, Record<string, ColumnDefinition<any>>>;
+          relations: (tables: TDef['tables']) => Record<string, Record<string, RelationDefinition>>;
+        }
+      >(
+        schemaDef: TDef
+      ): KonroSchema<TDef['tables'], ReturnType<TDef['relations']>> => {
+        return {
+          tables: schemaDef.tables,
+          relations: schemaDef.relations(schemaDef.tables),
+          // Types are applied via the return type annotation, these are just placeholders at runtime.
+          types: {} as any,
+          create: {} as any,
+        };
+      };
+
+      =======
+
+      export const createSchema = <
+        const TDef extends {
+          tables: Record<string, Record<string, ColumnDefinition<any>>>;
+          relations?: (tables: TDef['tables']) => Record<string, Record<string, RelationDefinition>>;
+        }
+      >(
+        schemaDef: TDef
+      ): KonroSchema<TDef['tables'], TDef['relations'] extends (...args: any) =>
+      any ? ReturnType<TDef['relations']> : {}> => {
+        const relations = schemaDef.relations ? schemaDef.relations(schemaDef.tables) : {};
+        return {
+          tables: schemaDef.tables,
+          relations: relations as any, // Cast to bypass complex conditional type issue
+          // Types are applied via the return type annotation, these are just placeholders at runtime.
+          types: {} as any,
+          create: {} as any,
+        };
+      };
+
+      >>>>>>> REPLACE
+
+      <<<<<<< SEARCH
+
+      /** A string column with optional validation. */
+
+      export const string = (options?: { unique?: boolean; default?: string;
+      min?: number; max?: number; format?: 'email' | 'uuid' | 'url' }) =>
+      createColumn<string>('string', options);
+
+      /** A number column with optional validation. */
+
+      export const number = (options?: { unique?: boolean; default?: number;
+      min?: number; max?: number; type?: 'integer' }) =>
+      createColumn<number>('number', options);
+
+      /** A boolean column. */
+
+      export const boolean = (options?: { default?: boolean }) =>
+      createColumn<boolean>('boolean', options);
+
+      =======
+
+      /** A string column with optional validation. */
+
+      export const string = (options?: { unique?: boolean; default?: string |
+      (() => string); min?: number; max?: number; format?: 'email' | 'uuid' |
+      'url' }) => createColumn<string>('string', options);
+
+      /** A number column with optional validation. */
+
+      export const number = (options?: { unique?: boolean; default?: number |
+      (() => number); min?: number; max?: number; type?: 'integer' }) =>
+      createColumn<number>('number', options);
+
+      /** A boolean column. */
+
+      export const boolean = (options?: { default?: boolean | (() => boolean) })
+      => createColumn<boolean>('boolean', options);
+
+      >>>>>>> REPLACE
+    patchStrategy: multi-search-replace
+snapshot:
+  src/schema.ts: >-
+    //
+
+    // Konro: The Type-Safe, Functional ORM for JSON/YAML
+
+    //
+
+    // ## Pillar I: The Recipe (Schema Definition)
+
+    //
+
+    // This file contains the core logic for defining a database schema. It is
+    designed to be
+
+    // both the runtime source of truth for validation and the static source of
+    truth for
+
+    // TypeScript types. By using phantom types and inference, we can create a
+    fully-typed
+
+    // `db` object from a single schema definition object, eliminating the need
+    for manual
+
+    // type declarations (`interface User { ... }`) and ensuring they never get
+    out of sync.
+
+    //
+
+
+    // --- TYPE INFERENCE HELPERS ---
+
+
+    /** Infers the underlying TypeScript type from a `ColumnDefinition`. e.g.,
+    `ColumnDefinition<string>` => `string`. */
+
+    type InferColumnType<C> = C extends ColumnDefinition<infer T> ? T : never;
+
+
+    /** A mapping of table names to their base model types (columns only, no
+    relations). */
+
+    export type BaseModels<TTables extends Record<string, any>> = {
+      [TableName in keyof TTables]: {
+        [ColumnName in keyof TTables[TableName]]: InferColumnType<TTables[TableName][ColumnName]>;
+      };
+    };
+
+
+    /**
+     * A mapping of table names to their full model types, including relations.
+     * This is a recursive type that resolves relationships to other full models.
+     */
+    type Models<TTables, TRelations, TBaseModels> = {
+      [TableName in keyof TTables]: TBaseModels[TableName] & {
+        [RelationName in keyof TRelations[TableName]]?: TRelations[TableName][RelationName] extends RelationDefinition & {
+          relationType: 'one';
+          targetTable: infer TargetTable extends keyof TTables;
+        }
+          ? Models<TTables, TRelations, TBaseModels>[TargetTable] | null
+          : TRelations[TableName][RelationName] extends RelationDefinition & {
+              relationType: 'many';
+              targetTable: infer TargetTable extends keyof TTables;
+            }
+          ? Models<TTables, TRelations, TBaseModels>[TargetTable][]
+          : never;
+      };
+    };
+
+
+    /** Finds all column names in a table definition that are optional for
+    insertion (i.e., `id` or has a `default`). */
+
+    type OptionalCreateKeys<TTableDef> = {
+      [K in keyof TTableDef]: TTableDef[K] extends ColumnDefinition<any> & ({ options: { default: any } } | { dataType: 'id' }) ? K : never;
+    }[keyof TTableDef];
+
+
+    /**
+     * A mapping of table names to their "create" types, used for `db.insert`.
+     * Required fields are kept, optional fields (id, defaults) are made partial, and `id` is removed.
+     */
+    type CreateModels<TTables, TBaseModels> = {
+      [TableName in keyof TTables]: Omit<
+        Omit<TBaseModels[TableName], OptionalCreateKeys<TTables[TableName]>> &
+          Partial<Pick<TBaseModels[TableName], OptionalCreateKeys<TTables[TableName]>>>,
+        'id'
+      >;
+    };
+
+
+
+    // --- PUBLIC API TYPES ---
+
+
+    /** The publicly exposed structure of a fully-processed Konro schema. */
+
+    export interface KonroSchema<TTables, TRelations> {
+      tables: TTables;
+      relations: TRelations;
+      types: Models<TTables, TRelations, BaseModels<TTables>>;
+      create: CreateModels<TTables, BaseModels<TTables>>;
+    }
+
+
+    /** The definition for a database column, created by helpers like
+    `konro.string()`. */
+
+    export interface ColumnDefinition<T> {
+      readonly _type: 'column';
+      readonly dataType: 'id' | 'string' | 'number' | 'boolean' | 'date' | 'object';
+      readonly options?: any;
+      readonly _tsType: T; // Phantom type, does not exist at runtime
+    }
+
+
+    /** The definition for a table relationship, created by `konro.one()` or
+    `konro.many()`. */
+
+    export interface RelationDefinition {
+      readonly _type: 'relation';
+      readonly relationType: 'one' | 'many';
+      readonly targetTable: string;
+      readonly on: string;
+      readonly references: string;
+    }
+
+
+    /** The definition for a data aggregation, created by `konro.count()`,
+    `konro.sum()`, etc. */
+
+    export interface AggregationDefinition {
+      readonly _type: 'aggregation';
+      readonly aggType: 'count' | 'sum' | 'avg' | 'min' | 'max';
+      readonly column?: string;
+    }
+
+
+
+    // --- SCHEMA BUILDER FUNCTION ---
+
+
+    /**
+     * Defines the structure, types, and relations of your database.
+     * This is the single source of truth for both runtime validation and static types.
+     *
+     * @param schemaDef The schema definition object.
+     * @returns A processed schema object with inferred types attached.
+     */
+    export const createSchema = <
+      const TDef extends {
+        tables: Record<string, Record<string, ColumnDefinition<any>>>;
+        relations: (tables: TDef['tables']) => Record<string, Record<string, RelationDefinition>>;
+      }
+    >(
+      schemaDef: TDef
+    ): KonroSchema<TDef['tables'], ReturnType<TDef['relations']>> => {
+      return {
+        tables: schemaDef.tables,
+        relations: schemaDef.relations(schemaDef.tables),
+        // Types are applied via the return type annotation, these are just placeholders at runtime.
+        types: {} as any,
+        create: {} as any,
+      };
+    };
+
+
+
+    // --- COLUMN DEFINITION HELPERS ---
+
+
+    const createColumn = <T>(dataType: ColumnDefinition<T>['dataType'],
+    options?: object): ColumnDefinition<T> => ({
+      _type: 'column',
+      dataType,
+      options,
+      // This is a "phantom type", it holds the TypeScript type for inference but is undefined at runtime.
+      _tsType: undefined as T,
+    });
+
+
+    /** A managed, auto-incrementing integer primary key. */
+
+    export const id = () => createColumn<number>('id');
+
+    /** A string column with optional validation. */
+
+    export const string = (options?: { unique?: boolean; default?: string; min?:
+    number; max?: number; format?: 'email' | 'uuid' | 'url' }) =>
+    createColumn<string>('string', options);
+
+    /** A number column with optional validation. */
+
+    export const number = (options?: { unique?: boolean; default?: number; min?:
+    number; max?: number; type?: 'integer' }) => createColumn<number>('number',
+    options);
+
+    /** A boolean column. */
+
+    export const boolean = (options?: { default?: boolean }) =>
+    createColumn<boolean>('boolean', options);
+
+    /** A date column, stored as an ISO string but hydrated as a Date object. */
+
+    export const date = (options?: { default?: Date | (() => Date) }) =>
+    createColumn<Date>('date', options);
+
+    /** A column for storing arbitrary JSON objects, with a generic for type
+    safety. */
+
+    export const object = <T extends Record<string, any>>(options?: { default?:
+    T | (() => T) }) => createColumn<T>('object', options);
+
+
+
+    // --- RELATIONSHIP DEFINITION HELPERS ---
+
+
+    /** Defines a `one-to-one` or `many-to-one` relationship. */
+
+    export const one = (targetTable: string, options: { on: string; references:
+    string }): RelationDefinition => ({
+      _type: 'relation',
+      relationType: 'one',
+      targetTable,
+      ...options,
+    });
+
+
+    /** Defines a `one-to-many` relationship. */
+
+    export const many = (targetTable: string, options: { on: string; references:
+    string }): RelationDefinition => ({
+      _type: 'relation',
+      relationType: 'many',
+      targetTable,
+      ...options,
+    });
+
+
+
+    // --- AGGREGATION DEFINITION HELPERS ---
+
+
+    /** Aggregation to count records. */
+
+    export const count = (): AggregationDefinition => ({ _type: 'aggregation',
+    aggType: 'count' });
+
+    /** Aggregation to sum a numeric column. */
+
+    export const sum = (column: string): AggregationDefinition => ({ _type:
+    'aggregation', aggType: 'sum', column });
+
+    /** Aggregation to average a numeric column. */
+
+    export const avg = (column: string): AggregationDefinition => ({ _type:
+    'aggregation', aggType: 'avg', column });
+
+    /** Aggregation to find the minimum value in a numeric column. */
+
+    export const min = (column: string): AggregationDefinition => ({ _type:
+    'aggregation', aggType: 'min', column });
+
+    /** Aggregation to find the maximum value in a numeric column. */
+
+    export const max = (column: string): AggregationDefinition => ({ _type:
+    'aggregation', aggType: 'max', column });
+approved: true

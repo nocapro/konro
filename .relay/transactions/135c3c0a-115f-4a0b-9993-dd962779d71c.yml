@@ -1,0 +1,693 @@
+uuid: 135c3c0a-115f-4a0b-9993-dd962779d71c
+projectId: konro
+createdAt: '2025-07-08T16:49:08.562Z'
+linesAdded: 603
+linesRemoved: 0
+gitCommitMsg: 'test: add comprehensive e2e tests for core operations'
+promptSummary: >-
+  The user requested a full suite of end-to-end tests for the core database
+  operations. I've created six new test files, organized them into a new
+  `test/e2e/Operations` directory, and covered aggregation, deletion, insertion,
+  simple querying, relational querying, and updating.
+reasoning:
+  - >-
+    As an expert AI programmer, I will now fulfill your request. I have analyzed
+    the project structure and will add a suite of end-to-end tests covering all
+    the core database operations: aggregation, deletion, insertion, querying
+    (with and without relations), and updating. To maintain a clean and
+    organized test structure, I will create a new `test/e2e/Operations`
+    directory for these new test files.
+  - '### Step 1: Create `Aggregate.test.ts`'
+  - >-
+    First, I will create a test file to validate the aggregation functionalities
+    (`count`, `sum`, `avg`, `min`, `max`). This test will include scenarios with
+    and without filtering, and also verify the behavior on empty record sets.
+  - '### Step 2: Create `Delete.test.ts`'
+  - >-
+    Next, I'll add tests for the `db.delete` operation. This will cover deleting
+    single and multiple records using different kinds of predicates, handling
+    cases where no records match, and ensuring that changes are correctly
+    persisted to disk.
+  - '### Step 3: Create `Insert.test.ts`'
+  - >-
+    I will now create tests for `db.insert`. These tests will validate the
+    insertion of single and multiple records, confirm correct auto-incrementing
+    of IDs, and ensure that schema validation (e.g., for unique constraints) is
+    properly enforced.
+  - '### Step 4: Create `Query-With.test.ts`'
+  - >-
+    This test file is dedicated to the relational query capabilities using
+    `.with()`. I will set up a rich dataset with multiple related tables and
+    then test various eager-loading scenarios, including one-to-one,
+    one-to-many, nested relations, filtering on related data, and selecting
+    specific fields from relations.
+  - '### Step 5: Create `Query.test.ts`'
+  - >-
+    This test file will cover the fundamental, non-relational query operations.
+    It validates fetching all records, filtering with `where`, pagination using
+    `limit` and `offset`, retrieving single records with `first`, and selecting
+    partial data with `select`.
+  - '### Step 6: Create `Update.test.ts`'
+  - >-
+    Finally, I'll add tests for the `db.update` operation. This will check the
+    update of single and multiple records, confirm that primary keys cannot be
+    altered, and ensure that schema validations are enforced during updates.
+  - >-
+    These new test files provide comprehensive coverage for the core CRUD and
+    query operations, ensuring the library's stability and correctness.
+operations:
+  - type: write
+    path: test/e2e/Operations/Aggregate.test.ts
+    content: |-
+      import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+      import { konro } from '../../../src/index';
+      import { testSchema, TEST_DIR, cleanup, ensureTestDir } from '../../util';
+      import path from 'path';
+
+      describe('E2E > Operations > Aggregation', () => {
+        const dbFilePath = path.join(TEST_DIR, 'aggregation_test.json');
+        const adapter = konro.createFileAdapter({
+          format: 'json',
+          single: { filepath: dbFilePath },
+        });
+        const db = konro.createDatabase({
+          schema: testSchema,
+          adapter,
+        });
+
+        beforeEach(async () => {
+          await ensureTestDir();
+          let state = db.createEmptyState();
+          const usersToInsert = [
+            { name: 'User 1', email: 'u1@test.com', age: 20, isActive: true },
+            { name: 'User 2', email: 'u2@test.com', age: 25, isActive: true },
+            { name: 'User 3', email: 'u3@test.com', age: 30, isActive: false },
+            { name: 'User 4', email: 'u4@test.com', age: 35, isActive: true },
+            { name: 'User 5', email: 'u5@test.com', age: 40, isActive: false },
+          ];
+          [state] = db.insert(state, 'users', usersToInsert);
+          await db.write(state);
+        });
+        afterEach(cleanup);
+
+        it('should correctly calculate count, sum, avg, min, and max', async () => {
+          const state = await db.read();
+
+          const stats = db.query(state)
+            .from('users')
+            .aggregate({
+              totalUsers: konro.count(),
+              totalAge: konro.sum('age'),
+              averageAge: konro.avg('age'),
+              minAge: konro.min('age'),
+              maxAge: konro.max('age'),
+            });
+
+          expect(stats.totalUsers).toBe(5);
+          expect(stats.totalAge).toBe(20 + 25 + 30 + 35 + 40); // 150
+          expect(stats.averageAge).toBe(150 / 5); // 30
+          expect(stats.minAge).toBe(20);
+          expect(stats.maxAge).toBe(40);
+        });
+
+        it('should correctly calculate aggregations with a where clause', async () => {
+          const state = await db.read();
+
+          const stats = db.query(state)
+            .from('users')
+            .where({ isActive: true })
+            .aggregate({
+              activeUsers: konro.count(),
+              totalAgeActive: konro.sum('age'),
+            });
+
+          expect(stats.activeUsers).toBe(3);
+          expect(stats.totalAgeActive).toBe(20 + 25 + 35); // 80
+        });
+
+        it('should handle aggregations on empty sets', async () => {
+          const state = await db.read();
+
+          const stats = db.query(state)
+            .from('users')
+            .where({ name: 'Nonexistent' })
+            .aggregate({
+              count: konro.count(),
+              sum: konro.sum('age'),
+              avg: konro.avg('age'),
+              min: konro.min('age'),
+              max: konro.max('age'),
+            });
+
+          expect(stats.count).toBe(0);
+          expect(stats.sum).toBe(0); // sum of empty set is 0
+          expect(stats.avg).toBeNull();
+          expect(stats.min).toBeNull();
+          expect(stats.max).toBeNull();
+        });
+      });
+    patchStrategy: replace
+  - type: write
+    path: test/e2e/Operations/Delete.test.ts
+    content: |-
+      import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+      import { konro } from '../../../src/index';
+      import { testSchema, TEST_DIR, cleanup, ensureTestDir } from '../../util';
+      import path from 'path';
+
+      describe('E2E > Operations > Delete', () => {
+        const dbFilePath = path.join(TEST_DIR, 'delete_test.json');
+        const adapter = konro.createFileAdapter({
+          format: 'json',
+          single: { filepath: dbFilePath },
+        });
+        const db = konro.createDatabase({
+          schema: testSchema,
+          adapter,
+        });
+
+        beforeEach(async () => {
+          await ensureTestDir();
+          let state = db.createEmptyState();
+          const usersToInsert = [
+            { name: 'User A', email: 'a@test.com', age: 20 },
+            { name: 'User B', email: 'b@test.com', age: 30 },
+            { name: 'User C', email: 'c@test.com', age: 40 },
+          ];
+          [state] = db.insert(state, 'users', usersToInsert);
+          await db.write(state);
+        });
+        afterEach(cleanup);
+
+        it('should delete a single record matching a predicate object', async () => {
+          let state = await db.read();
+          expect(db.query(state).from('users').all().length).toBe(3);
+
+          let deletedUsers;
+          [state, deletedUsers] = db.delete(state, 'users').where({ email: 'b@test.com' });
+
+          expect(deletedUsers.length).toBe(1);
+          expect(deletedUsers[0]?.name).toBe('User B');
+
+          const remainingUsers = db.query(state).from('users').all();
+          expect(remainingUsers.length).toBe(2);
+          expect(remainingUsers.find(u => u.email === 'b@test.com')).toBeUndefined();
+        });
+
+        it('should delete multiple records matching a predicate function', async () => {
+          let state = await db.read();
+          expect(db.query(state).from('users').all().length).toBe(3);
+
+          let deletedUsers;
+          [state, deletedUsers] = db.delete(state, 'users').where(user => user.age < 35);
+
+          expect(deletedUsers.length).toBe(2);
+          expect(deletedUsers.map(u => u.name).sort()).toEqual(['User A', 'User B']);
+
+          const remainingUsers = db.query(state).from('users').all();
+          expect(remainingUsers.length).toBe(1);
+          expect(remainingUsers[0]?.name).toBe('User C');
+        });
+
+        it('should return an empty array and unchanged state if no records match', async () => {
+          const initialState = await db.read();
+          
+          const [newState, deletedUsers] = db.delete(initialState, 'users').where({ name: 'Nonexistent' });
+
+          expect(deletedUsers.length).toBe(0);
+          expect(newState).toBe(initialState); // Should be the exact same object reference
+        });
+
+        it('should persist deletions to disk', async () => {
+          let state = await db.read();
+          [state] = db.delete(state, 'users').where({ id: 1 });
+          await db.write(state);
+
+          const stateAfterWrite = await db.read();
+          const users = db.query(stateAfterWrite).from('users').all();
+          expect(users.length).toBe(2);
+          expect(users.find(u => u.id === 1)).toBeUndefined();
+        });
+      });
+    patchStrategy: replace
+  - type: write
+    path: test/e2e/Operations/Insert.test.ts
+    content: |-
+      import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+      import { konro } from '../../../src/index';
+      import { testSchema, TEST_DIR, cleanup, ensureTestDir } from '../../util';
+      import path from 'path';
+      import { KonroValidationError } from '../../../src/utils/error.util';
+
+      describe('E2E > Operations > Insert', () => {
+        const dbFilePath = path.join(TEST_DIR, 'insert_test.json');
+        const adapter = konro.createFileAdapter({
+          format: 'json',
+          single: { filepath: dbFilePath },
+        });
+        const db = konro.createDatabase({
+          schema: testSchema,
+          adapter,
+        });
+
+        beforeEach(async () => {
+          await ensureTestDir();
+          await db.write(db.createEmptyState());
+        });
+        afterEach(cleanup);
+
+        it('should insert a single record and return it', async () => {
+          const state = await db.read();
+          const [newState, newUser] = db.insert(state, 'users', {
+            name: 'John Doe',
+            email: 'john@test.com',
+            age: 30,
+          });
+
+          expect(newUser.id).toBe(1);
+          expect(newUser.name).toBe('John Doe');
+          expect(newUser.isActive).toBe(true); // default value
+
+          const usersInState = db.query(newState).from('users').all();
+          expect(usersInState.length).toBe(1);
+          expect(usersInState[0]).toEqual(newUser);
+        });
+
+        it('should insert multiple records and return them', async () => {
+          const state = await db.read();
+          const usersToInsert = [
+            { name: 'Jane Doe', email: 'jane@test.com', age: 28 },
+            { name: 'Peter Pan', email: 'peter@test.com', age: 100, isActive: false },
+          ];
+          const [newState, newUsers] = db.insert(state, 'users', usersToInsert);
+
+          expect(newUsers.length).toBe(2);
+          expect(newUsers[0]?.id).toBe(1);
+          expect(newUsers[1]?.id).toBe(2);
+          expect(newUsers[0]?.name).toBe('Jane Doe');
+          expect(newUsers[1]?.isActive).toBe(false);
+
+          const usersInState = db.query(newState).from('users').all();
+          expect(usersInState.length).toBe(2);
+        });
+
+        it('should auto-increment IDs correctly across multiple inserts', async () => {
+          let state = await db.read();
+          let newUser;
+
+          [state, newUser] = db.insert(state, 'users', { name: 'First', email: 'first@test.com', age: 20 });
+          expect(newUser.id).toBe(1);
+
+          [state, newUser] = db.insert(state, 'users', { name: 'Second', email: 'second@test.com', age: 21 });
+          expect(newUser.id).toBe(2);
+        });
+
+        it('should throw validation error for duplicate unique fields', async () => {
+          let state = await db.read();
+          [state] = db.insert(state, 'users', { name: 'Unique User', email: 'unique@test.com', age: 40 });
+
+          const insertDuplicate = () => {
+            db.insert(state, 'users', { name: 'Another User', email: 'unique@test.com', age: 41 });
+          };
+
+          expect(insertDuplicate).toThrow(new KonroValidationError("Value 'unique@test.com' for column 'email' must be unique"));
+        });
+
+        it('should throw validation error for constraint violations', async () => {
+          const state = await db.read();
+          const insertInvalid = () => {
+            db.insert(state, 'users', { name: 'A', email: 'bademail.com', age: 17 });
+          };
+          // It should throw on the first failure it finds. Order not guaranteed.
+          // In this case, 'name' length < 2
+          expect(insertInvalid).toThrow(KonroValidationError);
+        });
+      });
+    patchStrategy: replace
+  - type: write
+    path: test/e2e/Operations/Query-With.test.ts
+    content: |-
+      import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+      import { konro } from '../../../src/index';
+      import { testSchema, TEST_DIR, cleanup, ensureTestDir } from '../../util';
+      import path from 'path';
+
+      describe('E2E > Operations > Query with Relations', () => {
+        const dbFilePath = path.join(TEST_DIR, 'query_with_test.json');
+        const adapter = konro.createFileAdapter({
+          format: 'json',
+          single: { filepath: dbFilePath },
+        });
+        const db = konro.createDatabase({
+          schema: testSchema,
+          adapter,
+        });
+
+        let userId1: number, userId2: number;
+        let postId1: number, postId2: number, postId3: number;
+
+        beforeEach(async () => {
+          await ensureTestDir();
+          let state = db.createEmptyState();
+          
+          // Insert users
+          let u1, u2;
+          [state, u1] = db.insert(state, 'users', { name: 'Alice', email: 'alice@test.com', age: 30 });
+          [state, u2] = db.insert(state, 'users', { name: 'Bob', email: 'bob@test.com', age: 35 });
+          userId1 = u1.id;
+          userId2 = u2.id;
+          
+          // Insert posts
+          let p1, p2, p3;
+          [state, p1] = db.insert(state, 'posts', { title: 'Alice Post 1', content: '...', authorId: userId1 });
+          [state, p2] = db.insert(state, 'posts', { title: 'Bob Post 1', content: '...', authorId: userId2 });
+          [state, p3] = db.insert(state, 'posts', { title: 'Alice Post 2', content: '...', authorId: userId1 });
+          postId1 = p1.id;
+          postId2 = p2.id;
+          postId3 = p3.id;
+
+          // Insert profiles
+          [state] = db.insert(state, 'profiles', { bio: 'Bio for Alice', userId: userId1 });
+
+          await db.write(state);
+        });
+        afterEach(cleanup);
+
+        it('should eager-load a one-to-many relationship', async () => {
+          const state = await db.read();
+          const user = db.query(state).from('users').where({ id: userId1 }).with({ posts: true }).first();
+
+          expect(user).toBeDefined();
+          expect(user?.posts).toBeDefined();
+          expect(user?.posts?.length).toBe(2);
+          expect(user?.posts?.map(p => p.title).sort()).toEqual(['Alice Post 1', 'Alice Post 2']);
+        });
+
+        it('should eager-load a many-to-one relationship', async () => {
+          const state = await db.read();
+          const post = db.query(state).from('posts').where({ id: postId1 }).with({ author: true }).first();
+
+          expect(post).toBeDefined();
+          expect(post?.author).toBeDefined();
+          expect(post?.author?.name).toBe('Alice');
+        });
+
+        it('should eager-load a one-to-one relationship', async () => {
+          const state = await db.read();
+          const user = db.query(state).from('users').where({ id: userId1 }).with({ profile: true }).first();
+          
+          expect(user).toBeDefined();
+          expect(user?.profile).toBeDefined();
+          expect(user?.profile?.bio).toBe('Bio for Alice');
+        });
+
+        it('should return null for a one-relation if no related record exists', async () => {
+          const state = await db.read();
+          const user = db.query(state).from('users').where({ id: userId2 }).with({ profile: true }).first();
+          
+          expect(user).toBeDefined();
+          expect(user?.profile).toBeNull();
+        });
+
+        it('should return an empty array for a many-relation if no related records exist', async () => {
+          let state = await db.read();
+          let newUser;
+          [state, newUser] = db.insert(state, 'users', { name: 'Charlie', email: 'charlie@test.com', age: 40 });
+          
+          const user = db.query(state).from('users').where({ id: newUser.id }).with({ posts: true }).first();
+          expect(user).toBeDefined();
+          expect(user?.posts).toEqual([]);
+        });
+
+        it('should handle nested eager-loading', async () => {
+          const state = await db.read();
+          const post = db.query(state)
+            .from('posts')
+            .where({ id: postId1 })
+            .with({
+              author: {
+                with: {
+                  posts: true,
+                  profile: true,
+                },
+              },
+            })
+            .first();
+
+          expect(post?.author?.name).toBe('Alice');
+          expect(post?.author?.profile?.bio).toBe('Bio for Alice');
+          expect(post?.author?.posts?.length).toBe(2);
+        });
+
+        it('should filter related records with a `where` clause', async () => {
+          const state = await db.read();
+          const user = db.query(state)
+            .from('users')
+            .where({ id: userId1 })
+            .with({
+              posts: {
+                where: (post) => post.title.includes('Post 2'),
+              }
+            })
+            .first();
+
+          expect(user?.posts?.length).toBe(1);
+          expect(user?.posts?.[0]?.title).toBe('Alice Post 2');
+        });
+
+        it('should select specific fields from related records', async () => {
+          const state = await db.read();
+          const user = db.query(state)
+              .from('users')
+              .where({ id: userId1 })
+              .with({
+                  posts: {
+                      select: {
+                          postTitle: testSchema.tables.posts.title,
+                      }
+                  }
+              })
+              .first();
+
+          expect(user?.posts?.length).toBe(2);
+          expect(user?.posts?.[0]).toEqual({ postTitle: 'Alice Post 1' });
+          expect(user?.posts?.[1]).toEqual({ postTitle: 'Alice Post 2' });
+          // @ts-expect-error - content should not exist on the selected type
+          expect(user?.posts?.[0]?.content).toBeUndefined();
+        });
+      });
+    patchStrategy: replace
+  - type: write
+    path: test/e2e/Operations/Query.test.ts
+    content: |-
+      import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+      import { konro } from '../../../src/index';
+      import { testSchema, TEST_DIR, cleanup, ensureTestDir } from '../../util';
+      import path from 'path';
+
+      describe('E2E > Operations > Query', () => {
+        const dbFilePath = path.join(TEST_DIR, 'query_test.json');
+        const adapter = konro.createFileAdapter({
+          format: 'json',
+          single: { filepath: dbFilePath },
+        });
+        const db = konro.createDatabase({
+          schema: testSchema,
+          adapter,
+        });
+
+        beforeEach(async () => {
+          await ensureTestDir();
+          let state = db.createEmptyState();
+          const usersToInsert = [
+            { name: 'Alice', email: 'alice@test.com', age: 30, isActive: true },
+            { name: 'Bob', email: 'bob@test.com', age: 35, isActive: false },
+            { name: 'Charlie', email: 'charlie@test.com', age: 30, isActive: true },
+          ];
+          [state] = db.insert(state, 'users', usersToInsert);
+          await db.write(state);
+        });
+        afterEach(cleanup);
+
+        it('should return all records from a table', async () => {
+          const state = await db.read();
+          const users = db.query(state).from('users').all();
+          expect(users.length).toBe(3);
+        });
+
+        it('should filter records using a `where` object predicate', async () => {
+          const state = await db.read();
+          const users = db.query(state).from('users').where({ age: 30, isActive: true }).all();
+          expect(users.length).toBe(1);
+          expect(users[0]?.name).toBe('Charlie');
+        });
+
+        it('should filter records using a `where` function predicate', async () => {
+          const state = await db.read();
+          const users = db.query(state).from('users').where(u => u.name.startsWith('A') || u.name.startsWith('B')).all();
+          expect(users.length).toBe(2);
+          expect(users.map(u => u.name).sort()).toEqual(['Alice', 'Bob']);
+        });
+
+        it('should return a single record using `first()`', async () => {
+          const state = await db.read();
+          const user = db.query(state).from('users').where({ email: 'bob@test.com' }).first();
+          expect(user).toBeDefined();
+          expect(user?.name).toBe('Bob');
+        });
+
+        it('should return null from `first()` if no record matches', async () => {
+          const state = await db.read();
+          const user = db.query(state).from('users').where({ name: 'Zelda' }).first();
+          expect(user).toBeNull();
+        });
+
+        it('should limit the number of results', async () => {
+          const state = await db.read();
+          const users = db.query(state).from('users').limit(2).all();
+          expect(users.length).toBe(2);
+        });
+
+        it('should offset the results for pagination', async () => {
+          const state = await db.read();
+          const users = db.query(state).from('users').offset(1).all();
+          expect(users.length).toBe(2);
+          expect(users[0]?.name).toBe('Bob');
+        });
+
+        it('should combine limit and offset', async () => {
+          const state = await db.read();
+          const users = db.query(state).from('users').limit(1).offset(1).all();
+          expect(users.length).toBe(1);
+          expect(users[0]?.name).toBe('Bob');
+        });
+
+        it('should select and rename specific fields', async () => {
+          const state = await db.read();
+          const partialUsers = db.query(state)
+            .from('users')
+            .where({ name: 'Alice' })
+            .select({
+              userName: testSchema.tables.users.name,
+              userEmail: testSchema.tables.users.email,
+            })
+            .all();
+
+          expect(partialUsers.length).toBe(1);
+          const user = partialUsers[0];
+          expect(user).toEqual({ userName: 'Alice', userEmail: 'alice@test.com' });
+          // @ts-expect-error - age should not exist on the selected type
+          expect(user.age).toBeUndefined();
+        });
+      });
+    patchStrategy: replace
+  - type: write
+    path: test/e2e/Operations/Update.test.ts
+    content: |-
+      import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+      import { konro } from '../../../src/index';
+      import { testSchema, TEST_DIR, cleanup, ensureTestDir } from '../../util';
+      import path from 'path';
+      import { KonroValidationError } from '../../../src/utils/error.util';
+
+      describe('E2E > Operations > Update', () => {
+        const dbFilePath = path.join(TEST_DIR, 'update_test.json');
+        const adapter = konro.createFileAdapter({
+          format: 'json',
+          single: { filepath: dbFilePath },
+        });
+        const db = konro.createDatabase({
+          schema: testSchema,
+          adapter,
+        });
+
+        beforeEach(async () => {
+          await ensureTestDir();
+          let state = db.createEmptyState();
+          const usersToInsert = [
+            { name: 'User A', email: 'a@test.com', age: 20 },
+            { name: 'User B', email: 'b@test.com', age: 30 },
+            { name: 'User C', email: 'c@test.com', age: 40 },
+          ];
+          [state] = db.insert(state, 'users', usersToInsert);
+          await db.write(state);
+        });
+        afterEach(cleanup);
+
+        it('should update a single record and return it', async () => {
+          let state = await db.read();
+          let updatedUsers;
+          [state, updatedUsers] = db.update(state, 'users')
+            .set({ name: 'User A Updated', age: 21 })
+            .where({ email: 'a@test.com' });
+
+          expect(updatedUsers.length).toBe(1);
+          const updatedUser = updatedUsers[0];
+          expect(updatedUser?.name).toBe('User A Updated');
+          expect(updatedUser?.age).toBe(21);
+          expect(updatedUser?.id).toBe(1); // ID should be unchanged
+
+          const userInState = db.query(state).from('users').where({ id: 1 }).first();
+          expect(userInState?.name).toBe('User A Updated');
+        });
+
+        it('should update multiple records and return them', async () => {
+          let state = await db.read();
+          let updatedUsers;
+          [state, updatedUsers] = db.update(state, 'users')
+            .set({ isActive: false })
+            .where(user => user.age < 35);
+
+          expect(updatedUsers.length).toBe(2);
+          updatedUsers.forEach(u => expect(u.isActive).toBe(false));
+
+          const usersInState = db.query(state).from('users').all();
+          expect(usersInState.filter(u => !u.isActive).length).toBe(2);
+        });
+
+        it('should not allow updating the primary key', async () => {
+          let state = await db.read();
+          let updatedUsers;
+
+          [state, updatedUsers] = db.update(state, 'users')
+            // @ts-expect-error - ID is not a valid key in the update type
+            .set({ id: 99, name: 'ID Test' })
+            .where({ id: 1 });
+          
+          expect(updatedUsers.length).toBe(1);
+          expect(updatedUsers[0]?.id).toBe(1); // ID unchanged
+          expect(updatedUsers[0]?.name).toBe('ID Test');
+        });
+        
+        it('should throw validation error on update', async () => {
+          let state = await db.read();
+          
+          // Make 'c@test.com' unavailable
+          const failUpdate = () => {
+            db.update(state, 'users')
+              .set({ email: 'c@test.com' }) // Try to use an existing unique email
+              .where({ id: 1 });
+          };
+
+          expect(failUpdate).toThrow(KonroValidationError);
+        });
+
+        it('should return an empty array if no records match the update predicate', async () => {
+          let state = await db.read();
+          let updatedUsers;
+          [state, updatedUsers] = db.update(state, 'users')
+            .set({ name: 'Should not be set' })
+            .where({ id: 999 });
+
+          expect(updatedUsers.length).toBe(0);
+        });
+      });
+    patchStrategy: replace
+snapshot:
+  test/e2e/Operations/Aggregate.test.ts: null
+  test/e2e/Operations/Delete.test.ts: null
+  test/e2e/Operations/Query-With.test.ts: null
+  test/e2e/Operations/Insert.test.ts: null
+  test/e2e/Operations/Query.test.ts: null
+  test/e2e/Operations/Update.test.ts: null
+approved: true
