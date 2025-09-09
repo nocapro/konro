@@ -14,6 +14,14 @@ src/
   operations.ts
   schema.ts
   types.ts
+test/
+  integration/
+    Adapters/
+      MultiFileYaml.test.ts
+      OnDemand.test.ts
+      PerRecord.test.ts
+      Read.test.ts
+      SingleFileJson.test.ts
 package.json
 tsconfig.build.json
 tsconfig.json
@@ -1567,7 +1575,8 @@ export const deletedAt = (): ColumnDefinition<Date | null> => createColumn<Date 
 /** A column for storing arbitrary JSON objects, with a generic for type safety. */
 export function object<T extends object>(options: { optional: true; default?: T | null | (() => T | null) }): ColumnDefinition<T | null>;
 export function object<T extends object>(options?: { optional?: false; default?: T | (() => T) }): ColumnDefinition<T>;
-export function object<T extends object>(options?: { optional?: boolean; default?: unknown }
+export function object<T extends object>(
+options?: { optional?: boolean; default?: unknown }
 ): ColumnDefinition<T | null> | ColumnDefinition<T> {
   if (options?.optional) {
     // The cast here is to satisfy the generic constraint on the implementation.
@@ -1942,83 +1951,743 @@ export interface OnDemandDbContext<S extends KonroSchema<any, any>> {
 export type DbContext<S extends KonroSchema<any, any>> = InMemoryDbContext<S> | OnDemandDbContext<S>;
 ```
 
-## File: package.json
-```json
-{
-  "name": "konro",
-  "version": "0.1.15",
-  "description": "A type-safe, functional-inspired ORM for local JSON/YAML file-based data sources.",
-  "type": "module",
-  "main": "./dist/index.js",
-  "module": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    }
-  },
-  "files": [
-    "dist"
-  ],
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/relaycoder/konro.git"
-  },
-  "keywords": [
-    "orm",
-    "json",
-    "yaml",
-    "csv",
-    "xlsx",
-    "database",
-    "typescript",
-    "local-first",
-    "immutable",
-    "functional"
-  ],
-  "author": "relaycoder",
-  "license": "MIT",
-  "devDependencies": {
-    "@types/bun": "latest",
-    "@types/js-yaml": "^4.0.9",
-    "@types/papaparse": "^5.3.14",
-    "@typescript-eslint/eslint-plugin": "^8.36.0",
-    "@typescript-eslint/parser": "^8.36.0",
-    "eslint": "^9.30.1",
-    "js-yaml": "^4.1.0",
-    "papaparse": "^5.4.1",
-    "typescript": "^5.5.4",
-    "xlsx": "^0.18.5"
-  },
-  "peerDependencies": {
-    "js-yaml": "^4.1.0",
-    "papaparse": "^5.4.1",
-    "typescript": "^5.0.0",
-    "xlsx": "^0.18.5"
-  },
-  "peerDependenciesMeta": {
-    "js-yaml": {
-      "optional": true
-    },
-    "papaparse": {
-      "optional": true
-    },
-    "xlsx": {
-      "optional": true
-    }
-  },
-  "scripts": {
-    "lint": "eslint .",
-    "build": "tsc --project tsconfig.build.json",
-    "dev": "tsc --watch --project tsconfig.build.json",
-    "test": "bun test",
-    "test:restore-importer": "git checkout -- test/konro-test-import.ts",
-    "test:src": "npm run test:restore-importer && bun test",
-    "test:dist": "npm run build && echo \"export * from '../dist/index.js';\" > test/konro-test-import.ts && bun test && npm run test:restore-importer",
-    "prepublishOnly": "npm run build"
-  }
-}
+## File: test/integration/Adapters/MultiFileYaml.test.ts
+```typescript
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { konro } from '../../konro-test-import';
+import { testSchema, TEST_DIR, cleanup, ensureTestDir } from '../../util';
+import path from 'path';
+import { promises as fs } from 'fs';
+import yaml from 'js-yaml';
+
+describe('Integration > Adapters > MultiFileYaml', () => {
+  const dbDirPath = path.join(TEST_DIR, 'yaml_db');
+  const adapter = konro.createFileAdapter({
+    format: 'yaml',
+    multi: { dir: dbDirPath },
+  });
+  const db = konro.createDatabase({
+    schema: testSchema,
+    adapter,
+  });
+
+  beforeEach(ensureTestDir);
+  afterEach(cleanup);
+
+  it('should correctly write each table to a separate YAML file', async () => {
+    let state = db.createEmptyState();
+    [state] = db.insert(state, 'users', {
+      name: 'YAML User',
+      email: 'yaml@test.com',
+      age: 44,
+    });
+    [state] = db.insert(state, 'posts', {
+      title: 'YAML Post',
+      content: 'Content here',
+      authorId: 1,
+    });
+
+    await db.write(state);
+
+    const usersFilePath = path.join(dbDirPath, 'users.yaml');
+    const postsFilePath = path.join(dbDirPath, 'posts.yaml');
+
+    const usersFileExists = await fs.access(usersFilePath).then(() => true).catch(() => false);
+    const postsFileExists = await fs.access(postsFilePath).then(() => true).catch(() => false);
+    expect(usersFileExists).toBe(true);
+    expect(postsFileExists).toBe(true);
+
+    const usersFileContent = await fs.readFile(usersFilePath, 'utf-8');
+    const postsFileContent = await fs.readFile(postsFilePath, 'utf-8');
+
+    const parsedUsers = yaml.load(usersFileContent) as { records: unknown[], meta: unknown };
+    const parsedPosts = yaml.load(postsFileContent) as { records: unknown[], meta: unknown };
+
+    expect(parsedUsers.records.length).toBe(1);
+    expect((parsedUsers.records[0] as { name: string }).name).toBe('YAML User');
+    expect((parsedUsers.meta as { lastId: number }).lastId).toBe(1);
+
+    expect(parsedPosts.records.length).toBe(1);
+    expect((parsedPosts.records[0] as { title: string }).title).toBe('YAML Post');
+    expect((parsedPosts.meta as { lastId: number }).lastId).toBe(1);
+  });
+
+  it('should correctly serialize and deserialize dates', async () => {
+    let state = db.createEmptyState();
+    const testDate = new Date('2023-10-27T10:00:00.000Z');
+
+    [state] = db.insert(state, 'posts', {
+      title: 'Dated Post',
+      content: '...',
+      authorId: 1,
+      publishedAt: testDate,
+    });
+
+    await db.write(state);
+
+    const readState = await db.read();
+
+    expect(readState.posts.records[0]?.publishedAt).toBeInstanceOf(Date);
+    expect((readState.posts.records[0]?.publishedAt as Date).getTime()).toBe(testDate.getTime());
+  });
+});
+```
+
+## File: test/integration/Adapters/OnDemand.test.ts
+```typescript
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { konro } from '../../konro-test-import';
+import { testSchema, TEST_DIR, cleanup, ensureTestDir, uuidTestSchema } from '../../util';
+import path from 'path';
+import { promises as fs } from 'fs';
+import yaml from 'js-yaml';
+import papaparse from 'papaparse';
+import xlsx from 'xlsx';
+import { KonroError } from '../../../src/utils/error.util';
+import type { OnDemandDbContext } from '../../../src/db';
+
+describe('Integration > Adapters > OnDemand', () => {
+  const dbDirPath = path.join(TEST_DIR, 'on_demand_db');
+
+  beforeEach(ensureTestDir);
+  afterEach(cleanup);
+
+  describe('Initialization', () => {
+    it('should successfully create an on-demand db context with a multi-file adapter', () => {
+      const adapter = konro.createFileAdapter({
+        format: 'yaml',
+        mode: 'on-demand',
+        multi: { dir: dbDirPath },
+      });
+      const db = konro.createDatabase({
+        schema: testSchema,
+        adapter,
+      });
+
+      expect(db).toBeDefined();
+      expect(db.adapter.mode).toBe('on-demand');
+      expect(typeof db.insert).toBe('function');
+      expect(typeof db.query).toBe('function');
+    });
+
+    it('should throw an error when creating an on-demand db context with a single-file adapter', () => {
+      expect(() => {
+        konro.createFileAdapter({
+          format: 'json',
+          mode: 'on-demand',
+          single: { filepath: path.join(dbDirPath, 'db.json') },
+        });
+      }).toThrow(KonroError({ code: 'E104' }));
+    });
+  });
+
+  describe('Unsupported Operations', () => {
+    const adapter = konro.createFileAdapter({
+      format: 'yaml',
+      mode: 'on-demand',
+      multi: { dir: dbDirPath },
+    });
+    const db = konro.createDatabase({
+      schema: testSchema,
+      adapter,
+    });
+    
+    it('should reject db.read()', async () => {
+      expect(db.read()).rejects.toThrow(KonroError({ code: 'E400', methodName: 'read' }));
+    });
+
+    it('should reject db.write()', async () => {
+      expect(db.write()).rejects.toThrow(KonroError({ code: 'E400', methodName: 'write' }));
+    });
+  });
+
+  describe('CRUD Operations', () => {
+    let db: OnDemandDbContext<typeof testSchema>;
+
+    beforeEach(() => {
+      const adapter = konro.createFileAdapter({
+        format: 'yaml',
+        mode: 'on-demand',
+        multi: { dir: dbDirPath },
+      });
+      db = konro.createDatabase({
+        schema: testSchema,
+        adapter,
+      });
+    });
+
+    it('should insert a record and write it to the correct file', async () => {
+      const user = await db.insert('users', {
+        name: 'OnDemand User',
+        email: 'ondemand@test.com',
+        age: 25,
+      });
+
+      expect(user.id).toBe(1);
+      expect(user.name).toBe('OnDemand User');
+
+      const userFilePath = path.join(dbDirPath, 'users.yaml');
+      const fileContent = await fs.readFile(userFilePath, 'utf-8');
+      const parsedContent = yaml.load(fileContent) as any;
+
+      expect(parsedContent.records.length).toBe(1);
+      expect(parsedContent.records[0].name).toBe('OnDemand User');
+      expect(parsedContent.meta.lastId).toBe(1);
+    });
+
+    it('should query for records', async () => {
+      await db.insert('users', { name: 'Query User', email: 'q@test.com', age: 30 });
+      
+      const user = await db.query().from('users').where({ name: 'Query User' }).first();
+      expect(user).toBeDefined();
+      expect(user?.name).toBe('Query User');
+
+      const allUsers = await db.query().from('users').all();
+      expect(allUsers.length).toBe(1);
+    });
+
+    it('should update a record', async () => {
+      const user = await db.insert('users', { name: 'Update Me', email: 'u@test.com', age: 40 });
+      
+      const updatedUsers = await db.update('users')
+        .set({ name: 'Updated Name' })
+        .where({ id: user.id });
+
+      expect(updatedUsers.length).toBe(1);
+      expect(updatedUsers[0]?.name).toBe('Updated Name');
+
+      const userFilePath = path.join(dbDirPath, 'users.yaml');
+      const fileContent = await fs.readFile(userFilePath, 'utf-8');
+      const parsedContent = yaml.load(fileContent) as any;
+      
+      expect(parsedContent.records[0].name).toBe('Updated Name');
+    });
+
+    it('should delete a record', async () => {
+      const user = await db.insert('users', { name: 'Delete Me', email: 'd@test.com', age: 50 });
+      
+      await db.delete('users').where({ id: user.id });
+
+      const users = await db.query().from('users').all();
+      expect(users.length).toBe(0);
+
+      const userFilePath = path.join(dbDirPath, 'users.yaml');
+      const fileContent = await fs.readFile(userFilePath, 'utf-8');
+      const parsedContent = yaml.load(fileContent) as any;
+      
+      expect(parsedContent.records.length).toBe(0);
+    });
+    
+    it('should query with relations', async () => {
+      const user = await db.insert('users', { name: 'Author', email: 'author@test.com', age: 35 });
+      await db.insert('posts', { title: 'Post by Author', content: '...', authorId: user.id });
+      await db.insert('posts', { title: 'Another Post', content: '...', authorId: user.id });
+      
+      const userWithPosts = await db.query().from('users').where({ id: user.id }).with({ posts: true }).first();
+      
+      expect(userWithPosts).toBeDefined();
+      expect(userWithPosts?.name).toBe('Author');
+      expect(userWithPosts?.posts).toBeInstanceOf(Array);
+      expect(userWithPosts?.posts?.length).toBe(2);
+      expect(userWithPosts?.posts?.[0]?.title).toBe('Post by Author');
+    });
+
+    it('should perform aggregations', async () => {
+      await db.insert('users', { name: 'Agg User 1', email: 'agg1@test.com', age: 20 });
+      await db.insert('users', { name: 'Agg User 2', email: 'agg2@test.com', age: 30 });
+      
+      const result = await db.query().from('users').aggregate({
+        count: konro.count(),
+        avgAge: konro.avg('age'),
+        sumAge: konro.sum('age'),
+      });
+      
+      expect(result.count).toBe(2);
+      expect(result.avgAge).toBe(25);
+      expect(result.sumAge).toBe(50);
+    });
+  });
+
+  describe('ID Generation', () => {
+    it('should auto-increment IDs for new CSV files', async () => {
+      const dbDirPath = path.join(TEST_DIR, 'csv_db');
+      const adapter = konro.createFileAdapter({
+        format: 'csv',
+        mode: 'on-demand',
+        multi: { dir: dbDirPath },
+      });
+      const db = konro.createDatabase({ schema: testSchema, adapter });
+
+      const user1 = await db.insert('users', { name: 'CSV User 1', email: 'csv1@test.com', age: 20 });
+      expect(user1.id).toBe(1);
+
+      const user2 = await db.insert('users', { name: 'CSV User 2', email: 'csv2@test.com', age: 21 });
+      expect(user2.id).toBe(2);
+
+      // Verify file content
+      const userFilePath = path.join(dbDirPath, 'users.csv');
+      const fileContent = await fs.readFile(userFilePath, 'utf-8');
+      const parsed = papaparse.parse(fileContent, { header: true, dynamicTyping: true, skipEmptyLines: true });
+      expect(parsed.data).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: 1, name: 'CSV User 1', email: 'csv1@test.com', age: 20, isActive: true }),
+          expect.objectContaining({ id: 2, name: 'CSV User 2', email: 'csv2@test.com', age: 21, isActive: true }),
+        ])
+      );
+    });
+
+    it('should auto-increment IDs for new XLSX files', async () => {
+      const dbDirPath = path.join(TEST_DIR, 'xlsx_db');
+      const adapter = konro.createFileAdapter({
+        format: 'xlsx',
+        mode: 'on-demand',
+        multi: { dir: dbDirPath },
+      });
+      const db = konro.createDatabase({ schema: testSchema, adapter });
+
+      const user1 = await db.insert('users', { name: 'XLSX User 1', email: 'xlsx1@test.com', age: 20 });
+      expect(user1.id).toBe(1);
+
+      const user2 = await db.insert('users', { name: 'XLSX User 2', email: 'xlsx2@test.com', age: 21 });
+      expect(user2.id).toBe(2);
+
+      // Verify file content
+      const userFilePath = path.join(dbDirPath, 'users.xlsx');
+      const fileContent = await fs.readFile(userFilePath, 'utf-8');
+      const workbook = xlsx.read(fileContent, { type: 'base64' });
+      const sheetName = workbook.SheetNames[0];
+      expect(sheetName).toBeDefined();
+      const worksheet = workbook.Sheets[sheetName!];
+      expect(worksheet).toBeDefined();
+      const data = xlsx.utils.sheet_to_json(worksheet!);
+      expect(data).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: 1, name: 'XLSX User 1', email: 'xlsx1@test.com', age: 20, isActive: true }),
+          expect.objectContaining({ id: 2, name: 'XLSX User 2', email: 'xlsx2@test.com', age: 21, isActive: true }),
+        ])
+      );
+    });
+
+    it('should determine lastId from existing CSV files', async () => {
+      const dbDirPath = path.join(TEST_DIR, 'csv_db_read');
+      const userFilePath = path.join(dbDirPath, 'users.csv');
+
+      // Manually create a CSV with existing data
+      await fs.mkdir(dbDirPath, { recursive: true });
+      const initialCsv = papaparse.unparse([{ id: 5, name: 'Existing User', email: 'existing@test.com', age: 50, isActive: true }]);
+      await fs.writeFile(userFilePath, initialCsv);
+
+      const adapter = konro.createFileAdapter({ format: 'csv', mode: 'on-demand', multi: { dir: dbDirPath } });
+      const db = konro.createDatabase({ schema: testSchema, adapter });
+
+      const newUser = await db.insert('users', { name: 'New CSV User', email: 'newcsv@test.com', age: 25 });
+      expect(newUser.id).toBe(6);
+    });
+
+    it('should determine lastId from existing XLSX files', async () => {
+      const dbDirPath = path.join(TEST_DIR, 'xlsx_db_read');
+      const userFilePath = path.join(dbDirPath, 'users.xlsx');
+
+      // Manually create an XLSX with existing data
+      await fs.mkdir(dbDirPath, { recursive: true });
+      const initialData = [{ id: 10, name: 'Existing XLSX User', email: 'existing_xlsx@test.com', age: 60, isActive: false }];
+      const worksheet = xlsx.utils.json_to_sheet(initialData);
+      const workbook = xlsx.utils.book_new();
+      xlsx.utils.book_append_sheet(workbook, worksheet, 'data');
+      const fileContent = xlsx.write(workbook, { bookType: 'xlsx', type: 'base64' });
+      await fs.writeFile(userFilePath, fileContent, 'utf-8');
+
+      const adapter = konro.createFileAdapter({ format: 'xlsx', mode: 'on-demand', multi: { dir: dbDirPath } });
+      const db = konro.createDatabase({ schema: testSchema, adapter });
+
+      const newUser = await db.insert('users', { name: 'New XLSX User', email: 'newxlsx@test.com', age: 35 });
+      expect(newUser.id).toBe(11);
+    });
+
+    it('should generate UUIDs for id column', async () => {
+      const dbDirPath = path.join(TEST_DIR, 'uuid_db');
+      const adapter = konro.createFileAdapter({
+        format: 'yaml',
+        mode: 'on-demand',
+        multi: { dir: dbDirPath },
+      });
+      const db = konro.createDatabase({ schema: uuidTestSchema, adapter });
+
+      const user = await db.insert('uuid_users', { name: 'UUID User' });
+      expect(typeof user.id).toBe('string');
+      expect(user.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+
+      const fileContent = await fs.readFile(path.join(dbDirPath, 'uuid_users.yaml'), 'utf-8');
+      const parsed = yaml.load(fileContent) as any;
+      expect(parsed.records[0].id).toBe(user.id);
+    });
+  });
+});
+```
+
+## File: test/integration/Adapters/PerRecord.test.ts
+```typescript
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { konro } from '../../konro-test-import';
+import { testSchema, TEST_DIR, cleanup, ensureTestDir, uuidTestSchema } from '../../util';
+import path from 'path';
+import { promises as fs } from 'fs';
+import yaml from 'js-yaml';
+import { KonroError, KonroStorageError } from '../../../src/utils/error.util';
+import type { InMemoryDbContext, OnDemandDbContext } from '../../../src/db';
+
+describe('Integration > Adapters > PerRecord', () => {
+  const dbDirPath = path.join(TEST_DIR, 'per_record_db');
+
+  beforeEach(ensureTestDir);
+  afterEach(cleanup);
+
+  describe('Initialization', () => {
+    it('should successfully create a per-record adapter', () => {
+      const adapter = konro.createFileAdapter({
+        format: 'json',
+        perRecord: { dir: dbDirPath },
+      });
+      expect(adapter).toBeDefined();
+      expect(adapter.options.perRecord).toEqual({ dir: dbDirPath });
+    });
+
+    it('should throw an error for unsupported formats like "csv"', () => {
+      expect(() => {
+        konro.createFileAdapter({
+          format: 'csv',
+          perRecord: { dir: dbDirPath },
+        });
+      }).toThrow(KonroError({ code: 'E105' }));
+    });
+  });
+
+  describe('In-Memory Mode (JSON)', () => {
+    let db: InMemoryDbContext<typeof testSchema>;
+    const adapter = konro.createFileAdapter({
+      format: 'json',
+      perRecord: { dir: dbDirPath },
+    });
+
+    beforeEach(() => {
+      db = konro.createDatabase({ schema: testSchema, adapter });
+    });
+
+    it('should write each record to a separate file and a meta file', async () => {
+      let state = db.createEmptyState();
+      [state] = db.insert(state, 'users', { name: 'Record User', email: 'rec@test.com', age: 33 });
+      [state] = db.insert(state, 'posts', { title: 'Record Post', content: '...', authorId: 1 });
+
+      await db.write(state);
+
+      const usersDir = path.join(dbDirPath, 'users');
+      const postsDir = path.join(dbDirPath, 'posts');
+      
+      const userRecordPath = path.join(usersDir, '1.json');
+      const userMetaPath = path.join(usersDir, '_meta.json');
+      const postRecordPath = path.join(postsDir, '1.json');
+      const postMetaPath = path.join(postsDir, '_meta.json');
+
+      const userRecordContent = JSON.parse(await fs.readFile(userRecordPath, 'utf-8'));
+      const userMetaContent = JSON.parse(await fs.readFile(userMetaPath, 'utf-8'));
+      const postRecordContent = JSON.parse(await fs.readFile(postRecordPath, 'utf-8'));
+      const postMetaContent = JSON.parse(await fs.readFile(postMetaPath, 'utf-8'));
+
+      expect(userRecordContent.name).toBe('Record User');
+      expect(userMetaContent.lastId).toBe(1);
+      expect(postRecordContent.title).toBe('Record Post');
+      expect(postMetaContent.lastId).toBe(1);
+    });
+
+    it('should delete record files that are no longer in the state', async () => {
+      let state = db.createEmptyState();
+      [state] = db.insert(state, 'users', { name: 'To Be Deleted', email: 'del@test.com', age: 40 });
+      await db.write(state);
+      
+      const userRecordPath = path.join(dbDirPath, 'users', '1.json');
+      expect(await fs.access(userRecordPath).then(() => true).catch(() => false)).toBe(true);
+
+      [state] = db.delete(state, 'users').where({ id: 1 });
+      await db.write(state);
+
+      expect(await fs.access(userRecordPath).then(() => true).catch(() => false)).toBe(false);
+    });
+
+    it('should read records from individual files to build the state', async () => {
+      // Manually create files
+      const usersDir = path.join(dbDirPath, 'users');
+      await fs.mkdir(usersDir, { recursive: true });
+      await fs.writeFile(path.join(usersDir, '1.json'), JSON.stringify({ id: 1, name: 'Manual User', email: 'man@test.com', age: 50, isActive: true }));
+      await fs.writeFile(path.join(usersDir, '_meta.json'), JSON.stringify({ lastId: 1 }));
+      
+      const state = await db.read();
+      
+      expect(state.users.records.length).toBe(1);
+      expect(state.users.records[0]?.name).toBe('Manual User');
+      expect(state.users.meta.lastId).toBe(1);
+      expect(state.posts.records.length).toBe(0);
+    });
+    
+    it('should derive lastId from record files if meta file is missing', async () => {
+        const usersDir = path.join(dbDirPath, 'users');
+        await fs.mkdir(usersDir, { recursive: true });
+        await fs.writeFile(path.join(usersDir, '2.json'), JSON.stringify({ id: 2, name: 'User 2', email: 'u2@test.com', age: 50, isActive: true }));
+        await fs.writeFile(path.join(usersDir, '5.json'), JSON.stringify({ id: 5, name: 'User 5', email: 'u5@test.com', age: 50, isActive: true }));
+
+        const state = await db.read();
+        expect(state.users.meta.lastId).toBe(5);
+    });
+
+    it('should throw KonroStorageError for a corrupt record file', async () => {
+      const usersDir = path.join(dbDirPath, 'users');
+      await fs.mkdir(usersDir, { recursive: true });
+      await fs.writeFile(path.join(usersDir, '1.json'), '{ "id": 1, "name": "Corrupt"'); // Invalid JSON
+      
+      await expect(db.read()).rejects.toThrow(KonroStorageError);
+    });
+  });
+
+  describe('On-Demand Mode (YAML)', () => {
+    let db: OnDemandDbContext<typeof testSchema>;
+    
+    beforeEach(() => {
+        const adapter = konro.createFileAdapter({
+            format: 'yaml',
+            mode: 'on-demand',
+            perRecord: { dir: dbDirPath },
+        });
+        db = konro.createDatabase({ schema: testSchema, adapter });
+    });
+
+    it('should insert a record and create its file and update meta', async () => {
+      const user = await db.insert('users', { name: 'OnDemand Record', email: 'odr@test.com', age: 25 });
+      
+      const userRecordPath = path.join(dbDirPath, 'users', `${user.id}.yaml`);
+      const userMetaPath = path.join(dbDirPath, 'users', '_meta.json');
+
+      const recordContent = yaml.load(await fs.readFile(userRecordPath, 'utf-8')) as any;
+      const metaContent = JSON.parse(await fs.readFile(userMetaPath, 'utf-8'));
+
+      expect(recordContent.name).toBe('OnDemand Record');
+      expect(metaContent.lastId).toBe(1);
+    });
+
+    it('should update a record file', async () => {
+      const user = await db.insert('users', { name: 'Update Me', email: 'upd@test.com', age: 35 });
+      await db.update('users').set({ name: 'Updated Name' }).where({ id: user.id });
+
+      const userRecordPath = path.join(dbDirPath, 'users', `${user.id}.yaml`);
+      const recordContent = yaml.load(await fs.readFile(userRecordPath, 'utf-8')) as any;
+      
+      expect(recordContent.name).toBe('Updated Name');
+    });
+
+    it('should delete a record file', async () => {
+      const user = await db.insert('users', { name: 'Delete Me', email: 'del@test.com', age: 45 });
+      const userRecordPath = path.join(dbDirPath, 'users', `${user.id}.yaml`);
+      expect(await fs.access(userRecordPath).then(() => true).catch(() => false)).toBe(true);
+
+      await db.delete('users').where({ id: user.id });
+      expect(await fs.access(userRecordPath).then(() => true).catch(() => false)).toBe(false);
+    });
+
+    it('should query with relations by reading multiple tables', async () => {
+        const user = await db.insert('users', { name: 'Author', email: 'author@test.com', age: 35 });
+        await db.insert('posts', { title: 'Post by Author', content: '...', authorId: user.id });
+        
+        const userWithPosts = await db.query().from('users').where({ id: user.id }).with({ posts: true }).first();
+        
+        expect(userWithPosts).toBeDefined();
+        expect(userWithPosts?.posts?.length).toBe(1);
+        expect(userWithPosts?.posts?.[0]?.title).toBe('Post by Author');
+    });
+  });
+
+  describe('ID Handling', () => {
+    it('should generate UUIDs for filenames and record IDs', async () => {
+        const adapter = konro.createFileAdapter({
+            format: 'json',
+            mode: 'on-demand',
+            perRecord: { dir: dbDirPath },
+        });
+        const db = konro.createDatabase({ schema: uuidTestSchema, adapter });
+
+        const user = await db.insert('uuid_users', { name: 'UUID User' });
+        
+        expect(typeof user.id).toBe('string');
+        const userRecordPath = path.join(dbDirPath, 'uuid_users', `${user.id}.json`);
+        expect(await fs.access(userRecordPath).then(() => true).catch(() => false)).toBe(true);
+        
+        const recordContent = JSON.parse(await fs.readFile(userRecordPath, 'utf-8'));
+        expect(recordContent.id).toBe(user.id);
+        expect(recordContent.name).toBe('UUID User');
+    });
+
+    it('on-demand insert should not derive lastId from existing files', async () => {
+        // Manually create a file with ID 5, but no meta file
+        const usersDir = path.join(dbDirPath, 'users');
+        await fs.mkdir(usersDir, { recursive: true });
+        await fs.writeFile(path.join(usersDir, '5.json'), JSON.stringify({ id: 5, name: 'Existing User', email: 'ex@test.com', age: 55, isActive: true }));
+        
+        const adapter = konro.createFileAdapter({ format: 'json', mode: 'on-demand', perRecord: { dir: dbDirPath } });
+        const db = konro.createDatabase({ schema: testSchema, adapter });
+        
+        // Inserting should start from ID 1 because _meta.json doesn't exist
+        const newUser = await db.insert('users', { name: 'New User', email: 'new@test.com', age: 22 });
+        expect(newUser.id).toBe(1);
+        
+        const metaContent = JSON.parse(await fs.readFile(path.join(usersDir, '_meta.json'), 'utf-8'));
+        expect(metaContent.lastId).toBe(1);
+    });
+  });
+});
+```
+
+## File: test/integration/Adapters/Read.test.ts
+```typescript
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { konro } from '../../konro-test-import';
+import { testSchema, TEST_DIR, cleanup, ensureTestDir } from '../../util';
+import path from 'path';
+import { promises as fs } from 'fs';
+import yaml from 'js-yaml';
+import { KonroStorageError } from '../../../src/utils/error.util';
+
+describe('Integration > Adapters > Read', () => {
+
+  beforeEach(ensureTestDir);
+  afterEach(cleanup);
+
+  describe('SingleFileJson', () => {
+    const dbFilePath = path.join(TEST_DIR, 'read_test.json');
+    const adapter = konro.createFileAdapter({
+      format: 'json',
+      single: { filepath: dbFilePath },
+    });
+    const db = konro.createDatabase({ schema: testSchema, adapter });
+
+    it('should correctly read and parse a single JSON file', async () => {
+      const state = db.createEmptyState();
+      state.users.records.push({ id: 1, name: 'Reader', email: 'reader@test.com', age: 30, isActive: true });
+      state.users.meta.lastId = 1;
+      await fs.writeFile(dbFilePath, JSON.stringify(state, null, 2));
+
+      const readState = await db.read();
+      expect(readState.users.records.length).toBe(1);
+      expect(readState.users.records[0]?.name).toBe('Reader');
+      expect(readState.users.meta.lastId).toBe(1);
+    });
+
+    it('should return an empty state if the file does not exist', async () => {
+      const readState = await db.read();
+      expect(readState).toEqual(db.createEmptyState());
+    });
+
+    it('should throw KonroStorageError for a corrupt JSON file', async () => {
+      await fs.writeFile(dbFilePath, '{ "users": { "records": ['); // Invalid JSON
+      await expect(db.read()).rejects.toThrow(KonroStorageError);
+    });
+  });
+
+  describe('MultiFileYaml', () => {
+    const dbDirPath = path.join(TEST_DIR, 'read_yaml_test');
+    const adapter = konro.createFileAdapter({
+      format: 'yaml',
+      multi: { dir: dbDirPath },
+    });
+    const db = konro.createDatabase({ schema: testSchema, adapter });
+
+    it('should correctly read and parse multiple YAML files', async () => {
+      const state = db.createEmptyState();
+      state.users.records.push({ id: 1, name: 'YamlReader', email: 'yaml@test.com', age: 31, isActive: true });
+      state.users.meta.lastId = 1;
+      state.posts.records.push({ id: 1, title: 'Yaml Post', content: '...', authorId: 1, publishedAt: new Date() });
+      state.posts.meta.lastId = 1;
+
+      await fs.mkdir(dbDirPath, { recursive: true });
+      await fs.writeFile(path.join(dbDirPath, 'users.yaml'), yaml.dump({ records: state.users.records, meta: state.users.meta }));
+      await fs.writeFile(path.join(dbDirPath, 'posts.yaml'), yaml.dump({ records: state.posts.records, meta: state.posts.meta }));
+      
+      const readState = await db.read();
+      expect(readState.users.records.length).toBe(1);
+      expect(readState.users.records[0]?.name).toBe('YamlReader');
+      expect(readState.posts.records.length).toBe(1);
+      expect(readState.posts.records[0]?.title).toBe('Yaml Post');
+      expect(readState.tags.records.length).toBe(0); // Ensure non-existent files are handled
+    });
+
+    it('should return an empty state if the directory does not exist', async () => {
+      const readState = await db.read();
+      expect(readState).toEqual(db.createEmptyState());
+    });
+  });
+});
+```
+
+## File: test/integration/Adapters/SingleFileJson.test.ts
+```typescript
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { konro } from '../../konro-test-import';
+import { testSchema, TEST_DIR, cleanup, ensureTestDir } from '../../util';
+import path from 'path';
+import { promises as fs } from 'fs';
+
+describe('Integration > Adapters > SingleFileJson', () => {
+  const dbFilePath = path.join(TEST_DIR, 'db.json');
+  const adapter = konro.createFileAdapter({
+    format: 'json',
+    single: { filepath: dbFilePath },
+  });
+  const db = konro.createDatabase({
+    schema: testSchema,
+    adapter,
+  });
+
+  beforeEach(ensureTestDir);
+  afterEach(cleanup);
+
+  it('should correctly write the DatabaseState to a single JSON file', async () => {
+    let state = db.createEmptyState();
+    [state] = db.insert(state, 'users', {
+      name: 'JSON User',
+      email: 'json@test.com',
+      age: 33,
+    });
+
+    await db.write(state);
+
+    const fileExists = await fs.access(dbFilePath).then(() => true).catch(() => false);
+    expect(fileExists).toBe(true);
+
+    const fileContent = await fs.readFile(dbFilePath, 'utf-8');
+    const parsedContent = JSON.parse(fileContent);
+
+    expect(parsedContent.users.records.length).toBe(1);
+    expect(parsedContent.users.records[0].name).toBe('JSON User');
+    expect(parsedContent.users.meta.lastId).toBe(1);
+    expect(parsedContent.posts.records.length).toBe(0);
+  });
+
+  it('should correctly serialize complex data types like dates', async () => {
+    let state = db.createEmptyState();
+    const testDate = new Date('2023-10-27T10:00:00.000Z');
+
+    [state] = db.insert(state, 'posts', {
+      title: 'Dated Post',
+      content: '...',
+      authorId: 1,
+      // override default
+      publishedAt: testDate,
+    });
+
+    await db.write(state);
+
+    const fileContent = await fs.readFile(dbFilePath, 'utf-8');
+    const parsedContent = JSON.parse(fileContent);
+
+    expect(parsedContent.posts.records[0].publishedAt).toBe(testDate.toISOString());
+  });
+});
 ```
 
 ## File: tsconfig.build.json
@@ -2066,5 +2735,87 @@ export type DbContext<S extends KonroSchema<any, any>> = InMemoryDbContext<S> | 
   },
   "include": ["src/**/*", "test/**/*"],
   "exclude": ["dist/**/*"]
+}
+```
+
+## File: package.json
+```json
+{
+  "name": "konro",
+  "version": "0.1.16",
+  "description": "A type-safe, functional-inspired ORM for local JSON/YAML file-based data sources.",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "homepage": "https://github.com/nocapro/konro",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nocapro/konro.git"
+  },
+  "keywords": [
+    "orm",
+    "json",
+    "yaml",
+    "csv",
+    "xlsx",
+    "database",
+    "typescript",
+    "local-first",
+    "immutable",
+    "functional"
+  ],
+  "author": "nocapro",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/js-yaml": "^4.0.9",
+    "@types/papaparse": "^5.3.14",
+    "@typescript-eslint/eslint-plugin": "^8.36.0",
+    "@typescript-eslint/parser": "^8.36.0",
+    "eslint": "^9.30.1",
+    "js-yaml": "^4.1.0",
+    "papaparse": "^5.4.1",
+    "typescript": "^5.5.4",
+    "xlsx": "^0.18.5",
+    "tsup": "^8.5.0"
+  },
+  "peerDependencies": {
+    "js-yaml": "^4.1.0",
+    "papaparse": "^5.4.1",
+    "typescript": "^5.0.0",
+    "xlsx": "^0.18.5"
+  },
+  "peerDependenciesMeta": {
+    "js-yaml": {
+      "optional": true
+    },
+    "papaparse": {
+      "optional": true
+    },
+    "xlsx": {
+      "optional": true
+    }
+  },
+  "scripts": {
+    "lint": "eslint .",
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "test": "bun test",
+    "test:restore-importer": "git checkout -- test/konro-test-import.ts",
+    "test:src": "npm run test:restore-importer && bun test",
+    "test:dist": "npm run build && echo \"export * from '../dist/index.js';\" > test/konro-test-import.ts && bun test && npm run test:restore-importer",
+    "prepublishOnly": "npm run build"
+  }
 }
 ```

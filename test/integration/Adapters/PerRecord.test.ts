@@ -118,6 +118,67 @@ describe('Integration > Adapters > PerRecord', () => {
     });
   });
 
+  describe('In-Memory Mode (YAML)', () => {
+    let db: InMemoryDbContext<typeof testSchema>;
+    const adapter = konro.createFileAdapter({
+      format: 'yaml',
+      perRecord: { dir: dbDirPath },
+    });
+
+    beforeEach(() => {
+      db = konro.createDatabase({ schema: testSchema, adapter });
+    });
+
+    it('should write each record to a separate YAML file and a meta file', async () => {
+      let state = db.createEmptyState();
+      [state] = db.insert(state, 'users', { name: 'YAML Record User', email: 'yrec@test.com', age: 33 });
+      [state] = db.insert(state, 'posts', { title: 'YAML Record Post', content: '...', authorId: 1 });
+
+      await db.write(state);
+
+      const usersDir = path.join(dbDirPath, 'users');
+      const postsDir = path.join(dbDirPath, 'posts');
+
+      const userRecordPath = path.join(usersDir, '1.yaml');
+      const userMetaPath = path.join(usersDir, '_meta.json');
+      const postRecordPath = path.join(postsDir, '1.yaml');
+      const postMetaPath = path.join(postsDir, '_meta.json');
+
+      const userRecordContent = yaml.load(await fs.readFile(userRecordPath, 'utf-8')) as any;
+      const userMetaContent = JSON.parse(await fs.readFile(userMetaPath, 'utf-8'));
+      const postRecordContent = yaml.load(await fs.readFile(postRecordPath, 'utf-8')) as any;
+      const postMetaContent = JSON.parse(await fs.readFile(postMetaPath, 'utf-8'));
+
+      expect(userRecordContent.name).toBe('YAML Record User');
+      expect(userMetaContent.lastId).toBe(1);
+      expect(postRecordContent.title).toBe('YAML Record Post');
+      expect(postMetaContent.lastId).toBe(1);
+    });
+
+    it('should read records from individual YAML files to build the state', async () => {
+      // Manually create files
+      const usersDir = path.join(dbDirPath, 'users');
+      await fs.mkdir(usersDir, { recursive: true });
+      await fs.writeFile(path.join(usersDir, '1.yaml'), yaml.dump({ id: 1, name: 'Manual YAML User', email: 'yman@test.com', age: 50, isActive: true }));
+      await fs.writeFile(path.join(usersDir, '_meta.json'), JSON.stringify({ lastId: 1 }));
+
+      const state = await db.read();
+
+      expect(state.users.records.length).toBe(1);
+      expect(state.users.records[0]?.name).toBe('Manual YAML User');
+      expect(state.users.meta.lastId).toBe(1);
+      expect(state.posts.records.length).toBe(0);
+    });
+
+    it('should throw KonroStorageError for a corrupt record YAML file', async () => {
+      const usersDir = path.join(dbDirPath, 'users');
+      await fs.mkdir(usersDir, { recursive: true });
+      await fs.writeFile(path.join(usersDir, '1.yaml'), 'name: Corrupt\n  bad-indent: true'); // Invalid YAML
+
+      await expect(db.read()).rejects.toThrow(KonroStorageError);
+    });
+  });
+
   describe('On-Demand Mode (YAML)', () => {
     let db: OnDemandDbContext<typeof testSchema>;
     

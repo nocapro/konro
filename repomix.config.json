@@ -27,6 +27,7 @@
     "tsconfig.json",
     "tsconfig.build.json",
     "src",
+    "test/integration/Adapters"
     // "test"
 // "konro-examples/test/e2e/per-record.test.ts",
 // "konro-examples/test/test.util.ts"
