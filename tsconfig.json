@@ -25,6 +25,7 @@
     // Some stricter flags
     "noUnusedLocals": true,
     "noUnusedParameters": true,
+    "noImplicitAny": true,
     "noPropertyAccessFromIndexSignature": false
   },
   "include": ["src/**/*", "test/**/*"],

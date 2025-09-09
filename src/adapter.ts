@@ -198,10 +198,22 @@ function createPerRecordStrategy(options: PerRecordStrategy['perRecord'], contex
         const idColumn = Object.keys(schema.tables[tableName]).find((k) => schema.tables[tableName][k]?.dataType === 'id');
         if (!idColumn) throw KonroError({ code: 'E202', tableName });
 
-        const currentFiles = new Set(tableState.records.map((r: KRecord) => `${r[idColumn]}${fileExtension}`));
+        const currentFiles = new Set(tableState.records.map((r: KRecord) => {
+          const idValue = r[idColumn];
+          if (!idValue) {
+            throw KonroError({ code: 'E203', tableName, details: 'Record ID is undefined or null' });
+          }
+          return `${idValue}${fileExtension}`;
+        }));
         const existingFiles = (await fs.readdir(tableDir)).filter(f => !f.startsWith('_meta') && !f.endsWith(TEMP_FILE_SUFFIX));
 
-        const recordWrites = tableState.records.map((r) => writeAtomic(path.join(tableDir, `${r[idColumn]}${fileExtension}`), serializer.stringify(r), fs));
+        const recordWrites = tableState.records.map((r) => {
+          const idValue = r[idColumn];
+          if (!idValue) {
+            throw KonroError({ code: 'E203', tableName, details: 'Record ID is undefined or null' });
+          }
+          return writeAtomic(path.join(tableDir, `${idValue}${fileExtension}`), serializer.stringify(r), fs);
+        });
         const recordDeletes = existingFiles.filter(f => !currentFiles.has(f)).map(f => fs.unlink(path.join(tableDir, f as string)));
         await Promise.all([...recordWrites, ...recordDeletes]);
       }));

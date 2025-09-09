@@ -34,7 +34,6 @@ import {
 import { createPredicateFromPartial } from './utils/predicate.util';
 import { KonroError, KonroStorageError } from './utils/error.util';
 import { writeAtomic } from './fs';
-import { TEMP_FILE_SUFFIX } from './utils/constants';
 
 export type { InMemoryDbContext, OnDemandDbContext, DbContext };
 
@@ -219,7 +218,7 @@ export function createDatabase<S extends KonroSchema<any, any>>(
 
   // The `read` method from the adapter provides the canonical way to get the full state.
   const getFullState = (): Promise<DatabaseState<S>> => adapter.read(schema);
-  
+
   // --- I/O Strategy for Multi-File ---
   const createMultiFileIO = (): OnDemandIO<S> => {
     const { dir } = fileAdapter.options.multi!;
@@ -278,22 +277,22 @@ export function createDatabase<S extends KonroSchema<any, any>>(
       return idCol;
     };
 
-    const writeTableState = async (tableName: string, tableState: TableState, idColumn: string): Promise<void> => {
-      const tableDir = getTableDir(tableName);
-      await fs.mkdir(tableDir, { recursive: true });
-      await writeAtomic(getMetaPath(tableName), JSON.stringify(tableState.meta, null, 2), fs);
+    // const writeTableState = async (tableName: string, tableState: TableState, idColumn: string): Promise<void> => {
+    //   const tableDir = getTableDir(tableName);
+    //   await fs.mkdir(tableDir, { recursive: true });
+    //   await writeAtomic(getMetaPath(tableName), JSON.stringify(tableState.meta, null, 2), fs);
 
-      const currentFiles = new Set(tableState.records.map((r) => `${(r as KRecord)[idColumn]}${fileExtension}`));
-      const existingFiles = (await fs.readdir(tableDir)).filter(f => !f.startsWith('_meta') && !f.endsWith(TEMP_FILE_SUFFIX));
+    //   const currentFiles = new Set(tableState.records.map((r) => `${(r as KRecord)[idColumn]}${fileExtension}`));
+    //   const existingFiles = (await fs.readdir(tableDir)).filter(f => !f.startsWith('_meta') && !f.endsWith(TEMP_FILE_SUFFIX));
 
-      const recordWrites = tableState.records.map((r) =>
-        writeAtomic(getRecordPath(tableName, (r as KRecord)[idColumn]), serializer.stringify(r), fs)
-      );
-      const recordDeletes = existingFiles.filter(f => !currentFiles.has(f)).map(f =>
-        fs.unlink(path.join(tableDir, f as string))
-      );
-      await Promise.all([...recordWrites, ...recordDeletes]);
-    };
+    //   const recordWrites = tableState.records.map((r) =>
+    //     writeAtomic(getRecordPath(tableName, (r as KRecord)[idColumn]), serializer.stringify(r), fs)
+    //   );
+    //   const recordDeletes = existingFiles.filter(f => !currentFiles.has(f)).map(f =>
+    //     fs.unlink(path.join(tableDir, f as string))
+    //   );
+    //   await Promise.all([...recordWrites, ...recordDeletes]);
+    // };
 
     /*
     const readTableState = async (tableName: string): Promise<TableState> => {
@@ -306,7 +305,7 @@ export function createDatabase<S extends KonroSchema<any, any>>(
 
       const files = await fs.readdir(tableDir);
       const recordFiles = files.filter((f) => !f.startsWith('_meta') && !f.endsWith(TEMP_FILE_SUFFIX));
-      
+
       const records = (
         await Promise.all(recordFiles.map(async (file) => {
           const data = await fs.readFile(path.join(tableDir, file));
@@ -361,24 +360,32 @@ export function createDatabase<S extends KonroSchema<any, any>>(
         const idColumn = getIdColumn(tableName);
         const state = await getFullState();
         const [newState, result] = core.update(state, tableName as keyof S['tables']).set(data).where(predicate as any);
-        await writeTableState(tableName, newState[tableName]!, idColumn);
+
+        // Only update the specific records that were modified, don't delete other files
+        const updatedRecords = Array.isArray(result) ? result : [result];
+        await Promise.all(
+          updatedRecords.map((r: any) =>
+            writeAtomic(getRecordPath(tableName, r[idColumn]), serializer.stringify(r), fs)
+          )
+        );
+
         return result;
       },
       delete: async (core, tableName, predicate) => {
         const idColumn = getIdColumn(tableName);
         const state = await getFullState();
         const [newState, result] = core.delete(state, tableName as keyof S['tables']).where(predicate as any);
-        
+
         const deletedIds = new Set(result.map((r: any) => String(r[idColumn])));
         const tableDir = getTableDir(tableName);
         const files = await fs.readdir(tableDir);
         const toDelete = files.filter(f => deletedIds.has(path.parse(f).name));
         await Promise.all(toDelete.map(f => fs.unlink(path.join(tableDir, f))));
-        
+
         // Also update meta if it changed (e.g., due to cascades)
         const newMeta = newState[tableName]?.meta;
         if (newMeta && JSON.stringify(newMeta) !== JSON.stringify(state[tableName]?.meta)) {
-            await writeAtomic(getMetaPath(tableName), JSON.stringify(newMeta, null, 2), fs);
+          await writeAtomic(getMetaPath(tableName), JSON.stringify(newMeta, null, 2), fs);
         }
 
         return result;

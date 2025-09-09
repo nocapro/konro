@@ -16,7 +16,7 @@ export const KONRO_ERROR_CODES = {
   E200: 'Table "{{tableName}}" does not exist in the database state.',
   E201: 'Schema for table "{{tableName}}" not found.',
   E202: `Table "{{tableName}}" must have an 'id' column for 'per-record' storage.`,
-  E203: 'Aggregation `{{aggType}}` requires a column.',
+  E203: 'Record ID is undefined or null in table "{{tableName}}". {{details}}',
 
   // Validation Errors
   E300: `Validation Error: Value '{{value}}' for column '{{columnName}}' must be unique.`,
