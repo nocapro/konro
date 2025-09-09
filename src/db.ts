@@ -251,8 +251,8 @@ export function createDatabase<S extends KonroSchema<any, any>>(
       update: async (core, tableName, data, predicate) => {
         const state = createEmptyStateImpl(schema);
         (state as any)[tableName] = await readTableState(tableName);
-        const [newState, result] = core.update(state, tableName as keyof S['tables']).set(data).where(predicate as any);
-        await writeTableState(tableName, newState[tableName]!);
+        const [updatedState, result] = core.update(state, tableName as keyof S['tables']).set(data).where(predicate as any);
+        await writeTableState(tableName, updatedState[tableName]!);
         return result;
       },
       delete: async (core, tableName, predicate) => {
@@ -359,7 +359,7 @@ export function createDatabase<S extends KonroSchema<any, any>>(
       update: async (core, tableName, data, predicate) => {
         const idColumn = getIdColumn(tableName);
         const state = await getFullState();
-        const [newState, result] = core.update(state, tableName as keyof S['tables']).set(data).where(predicate as any);
+        const [, result] = core.update(state, tableName as keyof S['tables']).set(data).where(predicate as any);
 
         // Only update the specific records that were modified, don't delete other files
         const updatedRecords = Array.isArray(result) ? result : [result];

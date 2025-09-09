@@ -6,6 +6,10 @@ import type { FsProvider } from './types';
 export const defaultFsProvider: FsProvider = {
   readFile: async (filepath: string): Promise<string | null> => {
     try {
+      const stats = await fs.stat(filepath);
+      if (stats.isDirectory()) {
+        return null; // Path is a directory, not a file
+      }
       return await fs.readFile(filepath, 'utf-8');
     } catch (error: any) {
       if (error.code === 'ENOENT') {
