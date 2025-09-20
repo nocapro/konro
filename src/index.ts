@@ -83,3 +83,5 @@ export const konro = {
   min,
   max,
 };
+
+export const __LAST_MODIFIED__ = '2024-01-01 00:00:00';

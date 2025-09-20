@@ -67,7 +67,7 @@
   },
   "scripts": {
     "lint": "eslint .",
-    "build": "tsup",
+    "build": "bun run scripts/update-timestamp.ts && tsup",
     "dev": "tsup --watch",
     "test": "bun test",
     "test:restore-importer": "git checkout -- test/konro-test-import.ts",
