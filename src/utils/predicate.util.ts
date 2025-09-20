@@ -1,4 +1,4 @@
-import { KRecord } from '../types';
+import type { KRecord } from '../types';
 
 /** Creates a predicate function from a partial object for equality checks, avoiding internal casts. */
 export const createPredicateFromPartial = <T extends KRecord>(partial: Partial<T>): ((record: T) => boolean) => {
